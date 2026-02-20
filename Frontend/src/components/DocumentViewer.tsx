@@ -1,6 +1,6 @@
 // src/components/DocumentViewer.tsx
 import { useState, useEffect } from "react";
-import { FileText, Image as ImageIcon, File, Download, ZoomIn, ZoomOut } from "lucide-react";
+import { FileText, Image as  File, Download, ZoomIn, ZoomOut } from "lucide-react";
 
 interface DocumentViewerProps {
   fileUrl?: string;
@@ -62,22 +62,22 @@ export default function DocumentViewer({
         return;
       }
 
-      if (fileId) {
-        // Fetch from API
-        const endpoint = isGmailAttachment
-          ? `${API_URL}/api/mail/download/${fileId}`
-          : `${API_URL}/api/documents/${fileId}/download`;
-
-        const res = await authFetch(endpoint);
-        
-        if (!res.ok) {
-          throw new Error("Failed to load document");
-        }
-
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        setViewUrl(blobUrl);
-      }
+     if (fileId) {
+  if (isGmailAttachment) {
+    const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
+    if (!res.ok) throw new Error("Failed to load document");
+    const blob = await res.blob();
+    setViewUrl(URL.createObjectURL(blob));
+  } else {
+    const res = await authFetch(`${API_URL}/documents/${fileId}`);
+    if (!res.ok) throw new Error("Failed to load document");
+    const data = await res.json();
+    const url = data.file_url;
+    if (!url) throw new Error("No file URL returned from server");
+    const serverRoot = BASE_URL.replace(/\/api\/?$/, "");
+setViewUrl(url.startsWith("http") ? url : `${serverRoot}${url}`);
+  }
+}
     } catch (err) {
       console.error("Document load error:", err);
       setError("Failed to load document preview");
@@ -87,42 +87,49 @@ export default function DocumentViewer({
   };
 
   const handleDownload = async () => {
-    try {
-      if (fileUrl) {
-        window.open(fileUrl, "_blank");
-        return;
-      }
-
-      if (fileId) {
-        const endpoint = isGmailAttachment
-          ? `${API_URL}/api/mail/download/${fileId}`
-          : `${API_URL}/api/documents/${fileId}/download`;
-
-        const res = await authFetch(endpoint);
+  try {
+    if (fileUrl) {
+      window.open(fileUrl, "_blank");
+      return;
+    }
+    if (fileId) {
+      let downloadUrl = "";
+      if (isGmailAttachment) {
+        const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
         const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        downloadUrl = URL.createObjectURL(blob);
+      } else {
+        const res = await authFetch(`${API_URL}/documents/${fileId}`);
+        const data = await res.json();
+        const raw = data.file_url;
+        downloadUrl = raw.startsWith("http") ? raw : `${BASE_URL}${raw}`;
       }
-    } catch (err) {
-      console.error("Download error:", err);
-      alert("Failed to download file");
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     }
-  };
+  } catch (err) {
+    console.error("Download error:", err);
+    alert("Failed to download file");
+  }
+};
 
-  const getFileExtension = () => {
-    if (fileType) return fileType.toLowerCase();
-    if (fileName) {
-      const ext = fileName.split(".").pop()?.toLowerCase();
-      return ext || "";
-    }
-    return "";
-  };
+const getFileExtension = () => {
+  if (fileType) return fileType.toLowerCase();
+  if (fileName) {
+    const ext = fileName.split(".").pop()?.toLowerCase();
+    if (ext && ext !== fileName.toLowerCase()) return ext; // only if it's actually an extension
+  }
+  // fallback: check the viewUrl itself
+  if (viewUrl) {
+    const ext = viewUrl.split("?")[0].split(".").pop()?.toLowerCase();
+    if (ext) return ext;
+  }
+  return "";
+};
 
   const renderPreview = () => {
     const ext = getFileExtension();

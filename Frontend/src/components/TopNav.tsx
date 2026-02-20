@@ -50,7 +50,7 @@ export default function TopNav() {
 
   const loadNotifications = async () => {
     try {
-      const res = await authFetch(`${API_URL}/api/notifications/my`);
+      const res = await authFetch(`${API_URL}/notifications/my`);
       if (!res.ok) return;
       const data = await res.json();
       setNotifications(data);

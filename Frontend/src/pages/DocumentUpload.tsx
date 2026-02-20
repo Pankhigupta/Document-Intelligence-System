@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import DashboardLayout from "../components/DashboardLayout";
 import { Upload } from "lucide-react";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 // --- UNIVERSAL AUTH FETCH (fixes 401 for Google + email login) ---
 async function authFetch(url: string, options: RequestInit = {}) {

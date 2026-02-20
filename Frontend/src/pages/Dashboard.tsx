@@ -115,8 +115,8 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const [docsRes, deptRes] = await Promise.all([
-        authFetch(`${API_URL}/api/documents`),
-        authFetch(`${API_URL}/api/departments`),
+        authFetch(`${API_URL}/documents`),
+        authFetch(`${API_URL}/departments`),
       ]);
 
       const docsJson = await docsRes.json();
@@ -135,7 +135,7 @@ export default function Dashboard() {
   const loadGmailFiles = async () => {
     setGmailLoading(true);
     try {
-      const res = await authFetch(`${API_URL}/api/mail/files`, { method: "GET" });
+      const res = await authFetch(`${API_URL}/mail/files`, { method: "GET" });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`Failed to load Gmail files: ${res.status} ${text}`);
@@ -153,7 +153,7 @@ export default function Dashboard() {
 
   const handleDownloadGmailFile = async (fileId: string, filename: string) => {
     try {
-      const res = await authFetch(`${API_URL}/api/mail/download/${fileId}`);
+      const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
       if (!res.ok) {
         alert("Failed to download file");
         return;
