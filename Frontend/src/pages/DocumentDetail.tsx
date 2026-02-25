@@ -141,33 +141,33 @@ export default function DocumentDetail() {
     setLoading(true);
     try {
       // Document
-      const doc = (await apiFetch(`/documents/${id}`)) as DocumentWithDetails;
+      const doc = (await apiFetch(`/api/documents/${id}`)) as DocumentWithDetails;
       setDocument(doc);
 
       // comments
       const fetchedComments = (await apiFetch(
-        `/comments/${id}`
+        `/api/comments/${id}`
       )) as Comment[];
       setComments(fetchedComments || []);
 
       // notes
-      const fetchedNotes = (await apiFetch(`/notes/${id}`)) as Note[];
+      const fetchedNotes = (await apiFetch(`/api/notes/${id}`)) as Note[];
       setNotes(fetchedNotes || []);
 
       // highlights
       const fetchedHighlights = (await apiFetch(
-        `/highlights/${id}`
+        `/api/highlights/${id}`
       )) as Highlight[];
       setHighlights(fetchedHighlights || []);
 
       // permissions
       const fetchedPerms = (await apiFetch(
-        `/permissions/${id}`
+        `/api/permissions/${id}`
       )) as DocumentPermission[];
       setPermissions(fetchedPerms || []);
 
       // all profiles (for granting permission)
-      const fetchedProfiles = (await apiFetch(`/profiles`)) as Profile[];
+      const fetchedProfiles = (await apiFetch(`/api/profiles`)) as Profile[];
       setAllProfiles(fetchedProfiles || []);
     } catch (err) {
       console.error("Error loading document:", err);
@@ -190,7 +190,7 @@ export default function DocumentDetail() {
         document_id: id,
         content: newComment.trim(),
       };
-      const newC = (await apiFetch("/comments", {
+      const newC = (await apiFetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -215,7 +215,7 @@ export default function DocumentDetail() {
         document_id: id,
         content: newNote.trim(),
       };
-      const newN = (await apiFetch("/notes", {
+      const newN = (await apiFetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -241,7 +241,7 @@ export default function DocumentDetail() {
         user_id: selectedUser,
         permission_level: permissionLevel,
       };
-      const newP = (await apiFetch("/permissions", {
+      const newP = (await apiFetch("/api/permissions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -265,7 +265,7 @@ export default function DocumentDetail() {
     if (!confirm("Remove this permission?")) return;
     setProcessing(true);
     try {
-      await apiFetch(`/permissions/${permId}`, { method: "DELETE" });
+      await apiFetch(`/api/permissions/${permId}`, { method: "DELETE" });
       setPermissions((s) => s.filter((p) => p._id !== permId && p.user_id !== userId));
     } catch (err) {
       console.error("Delete permission failed:", err);

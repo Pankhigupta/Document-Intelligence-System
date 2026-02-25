@@ -60,7 +60,7 @@ export default function GmailDocument() {
     setLoading(true);
     try {
       // ✅ Fetch single file instead of all files
-      const res = await authFetch(`${API_URL}/mail/file/${id}`);
+      const res = await authFetch(`${API_URL}/api/mail/file/${id}`);
       if (!res.ok) {
         if (res.status === 404) {
           alert("File not found");
@@ -89,7 +89,7 @@ export default function GmailDocument() {
 
     setDownloading(true);
     try {
-      const res = await authFetch(`${API_URL}/mail/download/${file._id}`);
+      const res = await authFetch(`${API_URL}/api/mail/download/${file._id}`);
       if (!res.ok) {
         alert("Failed to download file");
         return;

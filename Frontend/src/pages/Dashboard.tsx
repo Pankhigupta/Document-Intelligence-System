@@ -58,17 +58,20 @@ const API_URL = `${BASE_URL}`.replace(/\/$/, "");
 export async function authFetch(url: string, options: RequestInit = {}) {
   const token = localStorage.getItem("token");
 
-  const baseHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = {};
 
-  if (token) baseHeaders.Authorization = `Bearer ${token}`;
+  // Only set JSON header if body is NOT FormData
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   return fetch(url, {
     ...options,
     credentials: "include",
     headers: {
-      ...baseHeaders,
+      ...headers,
       ...(options.headers || {}),
     },
   });
@@ -126,8 +129,8 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const [docsRes, deptRes] = await Promise.all([
-        authFetch(`${API_URL}/documents`),
-        authFetch(`${API_URL}/departments`),
+        authFetch(`${API_URL}/api/documents`),
+        authFetch(`${API_URL}/api/departments`),
       ]);
 
       const docsJson = await docsRes.json();
@@ -194,7 +197,7 @@ export default function Dashboard() {
       const aiData = await aiRes.json();
       const generatedSummary = aiData.summary || "AI could not generate a summary.";
 
-      const updateRes = await authFetch(`${API_URL}/documents/${docId}`, {
+      const updateRes = await authFetch(`${API_URL}/api/documents/${docId}`, {
         method: "PUT",
         body: JSON.stringify({ summary: generatedSummary }),
       });
@@ -216,7 +219,7 @@ export default function Dashboard() {
 
   try {
     // 1️⃣ Download file from backend (GridFS)
-    const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
+    const res = await authFetch(`${API_URL}/api/mail/download/${fileId}`);
     if (!res.ok) throw new Error("Download failed");
 
     const blob = await res.blob();
@@ -238,7 +241,7 @@ export default function Dashboard() {
 
    
     const saveRes = await authFetch(
-      `${API_URL}/mail/generate-summary/${fileId}`,
+      `${API_URL}/api/mail/generate-summary/${fileId}`,
       {
         method: "POST",
         body: JSON.stringify({ summary: generatedSummary }),
@@ -268,7 +271,7 @@ export default function Dashboard() {
   const loadGmailFiles = async () => {
     setGmailLoading(true);
     try {
-      const res = await authFetch(`${API_URL}/mail/files`, { method: "GET" });
+      const res = await authFetch(`${API_URL}/api/mail/files`, { method: "GET" });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`Failed to load Gmail files: ${res.status} ${text}`);
@@ -286,7 +289,7 @@ export default function Dashboard() {
 
   const handleDownloadGmailFile = async (fileId: string, filename: string) => {
     try {
-      const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
+      const res = await authFetch(`${API_URL}/api/mail/download/${fileId}`);
       if (!res.ok) {
         alert("Failed to download file");
         return;
@@ -555,10 +558,10 @@ export default function Dashboard() {
               onClick={async () => {
                 setGmailLoading(true);
                 try {
-                  const resp = await authFetch(`${API_URL}/mail/fetch`, {
+                  const resp = await authFetch(`${API_URL}/api/mail/fetch`, {
                     method: "POST",
                     body: JSON.stringify({}),
-                  });
+                  })
                   if (resp.ok) await loadGmailFiles();
                 } finally {
                   setGmailLoading(false);

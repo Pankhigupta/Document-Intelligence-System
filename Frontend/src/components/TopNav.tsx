@@ -81,7 +81,7 @@ export default function TopNav() {
 
 const translateText = async (text: string) => {
   try {
-    const res = await fetch(`${API_URL}/translate`, {
+    const res = await fetch(`${API_URL}/api/translate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -107,7 +107,7 @@ const translateText = async (text: string) => {
 
   const loadNotifications = async () => {
     try {
-      const res = await authFetch(`${API_URL}/notifications/my`);
+      const res = await authFetch(`${API_URL}/api/notifications/my`);
       if (!res.ok) return;
       const data = await res.json();
 
@@ -129,7 +129,7 @@ const translateText = async (text: string) => {
   };
 
   const openNotification = (n: NotificationType) => {
-    if (n.document_id) navigate(`/documents/${n.document_id}`);
+    if (n.document_id) navigate(`/api/documents/${n.document_id}`);
     setShowNotifications(false);
   };
 
