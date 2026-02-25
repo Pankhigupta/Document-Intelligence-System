@@ -14,7 +14,7 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useAuth } from "../contexts/AuthContext";
 import DocumentViewer from "../components/DocumentViewer";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 type Urgency = "low" | "medium" | "high";
 
@@ -141,33 +141,33 @@ export default function DocumentDetail() {
     setLoading(true);
     try {
       // Document
-      const doc = (await apiFetch(`/documents/${id}`)) as DocumentWithDetails;
+      const doc = (await apiFetch(`/api/documents/${id}`)) as DocumentWithDetails;
       setDocument(doc);
 
       // comments
       const fetchedComments = (await apiFetch(
-        `/comments/${id}`
+        `/api/comments/${id}`
       )) as Comment[];
       setComments(fetchedComments || []);
 
       // notes
-      const fetchedNotes = (await apiFetch(`/notes/${id}`)) as Note[];
+      const fetchedNotes = (await apiFetch(`/api/notes/${id}`)) as Note[];
       setNotes(fetchedNotes || []);
 
       // highlights
       const fetchedHighlights = (await apiFetch(
-        `/highlights/${id}`
+        `/api/highlights/${id}`
       )) as Highlight[];
       setHighlights(fetchedHighlights || []);
 
       // permissions
       const fetchedPerms = (await apiFetch(
-        `/permissions/${id}`
+        `/api/permissions/${id}`
       )) as DocumentPermission[];
       setPermissions(fetchedPerms || []);
 
       // all profiles (for granting permission)
-      const fetchedProfiles = (await apiFetch(`/profiles`)) as Profile[];
+      const fetchedProfiles = (await apiFetch(`/api/profiles`)) as Profile[];
       setAllProfiles(fetchedProfiles || []);
     } catch (err) {
       console.error("Error loading document:", err);
@@ -190,7 +190,7 @@ export default function DocumentDetail() {
         document_id: id,
         content: newComment.trim(),
       };
-      const newC = (await apiFetch("/comments", {
+      const newC = (await apiFetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -215,7 +215,7 @@ export default function DocumentDetail() {
         document_id: id,
         content: newNote.trim(),
       };
-      const newN = (await apiFetch("/notes", {
+      const newN = (await apiFetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -241,7 +241,7 @@ export default function DocumentDetail() {
         user_id: selectedUser,
         permission_level: permissionLevel,
       };
-      const newP = (await apiFetch("/permissions", {
+      const newP = (await apiFetch("/api/permissions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -265,7 +265,7 @@ export default function DocumentDetail() {
     if (!confirm("Remove this permission?")) return;
     setProcessing(true);
     try {
-      await apiFetch(`/permissions/${permId}`, { method: "DELETE" });
+      await apiFetch(`/api/permissions/${permId}`, { method: "DELETE" });
       setPermissions((s) => s.filter((p) => p._id !== permId && p.user_id !== userId));
     } catch (err) {
       console.error("Delete permission failed:", err);
@@ -276,30 +276,6 @@ export default function DocumentDetail() {
   };
 
   // Fetch AI summary (server-side will call model or generate)
-  const fetchAISummary = async () => {
-    if (!id) return;
-    setSummaryLoading(true);
-    try {
-      const data = (await apiFetch(`/documents/${id}/summary`)) as { summary: string };
-      // update document summary
-      setDocument((d) => (d ? { ...d, summary: data.summary } : d));
-    } catch (err) {
-      console.error("AI summary fetch failed:", err);
-      alert(String(err));
-    } finally {
-      setSummaryLoading(false);
-    }
-  };
-
-  const fileDownloadUrl = (fileUrl?: string) => {
-    if (!fileUrl) return null;
-    // If backend returns full URL, use it. If relative (e.g. /uploads/...), prefix API host origin.
-    if (fileUrl.startsWith("http") || fileUrl.startsWith("https")) return fileUrl;
-    // remove leading slash if present when joining
-    const cleaned = fileUrl.startsWith("/") ? fileUrl.slice(1) : fileUrl;
-    const base = API_URL.replace(/\/api\/?$/, "");
-    return `${base}/${cleaned}`;
-  };
 
   if (loading || !profile) {
     return (
@@ -347,28 +323,6 @@ export default function DocumentDetail() {
               </p>
             </div>
           </div>
-
-          {/* <div className="flex items-center gap-3">
-            {document.file_url && (
-              <a
-                href={fileDownloadUrl(document.file_url) || "#"}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 px-3 py-2 border rounded hover:bg-gray-50"
-              >
-                <Download className="w-4 h-4" />
-                <span className="text-sm">Download</span>
-              </a>
-            )}
-
-            <button
-              onClick={() => fetchAISummary()}
-              className="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-60"
-              disabled={summaryLoading}
-            >
-              {summaryLoading ? "Summarizing..." : "Get AI Summary"}
-            </button>
-          </div> */}
         </div>
 
         {/* Main */}

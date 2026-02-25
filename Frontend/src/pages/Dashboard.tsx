@@ -1,5 +1,5 @@
 // src/pages/Dashboard.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect,useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Upload,
@@ -13,7 +13,8 @@ import {
   Mail,
   FileText,
   Download,
-  Search
+  Search,
+  Sparkles
 } from "lucide-react";
 
 import DashboardLayout from "../components/DashboardLayout";
@@ -27,6 +28,7 @@ interface Department {
 
 interface DocumentWithDetails {
   _id: string;
+  file_url: string;
   title: string;
   summary: string;
   urgency: "high" | "medium" | "low";
@@ -46,6 +48,8 @@ interface GmailFile {
     subject: string;
     messageId: string;
   };
+  summary?: string;
+  urgency: "high" | "medium" | "low";
 }
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
@@ -54,17 +58,20 @@ const API_URL = `${BASE_URL}`.replace(/\/$/, "");
 export async function authFetch(url: string, options: RequestInit = {}) {
   const token = localStorage.getItem("token");
 
-  const baseHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = {};
 
-  if (token) baseHeaders.Authorization = `Bearer ${token}`;
+  // Only set JSON header if body is NOT FormData
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   return fetch(url, {
     ...options,
     credentials: "include",
     headers: {
-      ...baseHeaders,
+      ...headers,
       ...(options.headers || {}),
     },
   });
@@ -76,6 +83,11 @@ export default function Dashboard() {
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+
+  const [summarizingId, setSummarizingId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const [gmailSummarizingId, setGmailSummarizingId] = useState<string | null>(null);
 
   const [gmailFiles, setGmailFiles] = useState<GmailFile[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
@@ -117,8 +129,8 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const [docsRes, deptRes] = await Promise.all([
-        authFetch(`${API_URL}/documents`),
-        authFetch(`${API_URL}/departments`),
+        authFetch(`${API_URL}/api/documents`),
+        authFetch(`${API_URL}/api/departments`),
       ]);
 
       const docsJson = await docsRes.json();
@@ -134,10 +146,132 @@ export default function Dashboard() {
     setLoading(false);
   };
 
+// --- NEW: DIRECT UPLOAD HANDLER ---
+  const handleDirectUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("title", file.name.replace(/\.[^/.]+$/, "")); // Auto-title from filename
+    formData.append("summary", "No summary yet. Click the here to generate one!");
+
+    try {
+      const res = await authFetch(`${API_URL}/api/documents`, {
+        method: "POST",
+        body: formData, // Browser sets boundary automatically
+      });
+
+      if (res.ok) {
+        await loadData(); // Refresh list immediately
+      } else {
+        alert("Upload failed");
+      }
+    } catch (err) {
+      console.error("Upload error:", err);
+    } finally {
+      setLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = ""; // Reset input
+    }
+  };
+
+  const handleGenerateSummary = async (docId: string, fileUrl: string) => {
+    setSummarizingId(docId);
+    try {
+      const fullUrl = fileUrl.startsWith("http") ? fileUrl : `${BASE_URL}${fileUrl}`;
+      const fileRes = await fetch(fullUrl);
+      if (!fileRes.ok) throw new Error("File not found on server");
+      
+      const blob = await fileRes.blob();
+      const file = new File([blob], "doc.pdf");
+
+      const aiFormData = new FormData();
+      aiFormData.append("file", file);
+
+      const aiRes = await fetch("http://127.0.0.1:8000/summarize", {
+        method: "POST",
+        body: aiFormData,
+      });
+
+      const aiData = await aiRes.json();
+      const generatedSummary = aiData.summary || "AI could not generate a summary.";
+
+      const updateRes = await authFetch(`${API_URL}/api/documents/${docId}`, {
+        method: "PUT",
+        body: JSON.stringify({ summary: generatedSummary }),
+      });
+
+      if (updateRes.ok) {
+        setDocuments(prev => prev.map(d => d._id === docId ? { ...d, summary: generatedSummary } : d));
+      }
+    } catch (err) {
+      console.error("AI Error:", err);
+      alert("Error generating summary.");
+    } finally {
+      setSummarizingId(null);
+    }
+  };
+
+  // --- ✅ FIXED: GMAIL AI SUMMARY HANDLER ---
+ const handleGenerateGmailSummary = async (fileId: string, filename: string) => {
+  setGmailSummarizingId(fileId);
+
+  try {
+    // 1️⃣ Download file from backend (GridFS)
+    const res = await authFetch(`${API_URL}/api/mail/download/${fileId}`);
+    if (!res.ok) throw new Error("Download failed");
+
+    const blob = await res.blob();
+    const file = new File([blob], filename, { type: blob.type });
+
+    // 2️⃣ Send to Python AI
+    const aiFormData = new FormData();
+    aiFormData.append("file", file);
+
+    const aiRes = await fetch("http://127.0.0.1:8000/summarize", {
+      method: "POST",
+      body: aiFormData,
+    });
+
+    if (!aiRes.ok) throw new Error("AI failed");
+
+    const aiData = await aiRes.json();
+    const generatedSummary = aiData.summary;
+
+   
+    const saveRes = await authFetch(
+      `${API_URL}/api/mail/generate-summary/${fileId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ summary: generatedSummary }),
+      }
+    );
+
+    if (!saveRes.ok) {
+      const err = await saveRes.text();
+      throw new Error(err);
+    }
+
+
+    setGmailFiles(prev =>
+      prev.map(f =>
+        f._id === fileId ? { ...f, summary: generatedSummary } : f
+      )
+    );
+
+  } catch (err: any) {
+    console.error("Gmail AI Error:", err);
+    alert(err.message);
+  } finally {
+    setGmailSummarizingId(null);
+  }
+};
+
   const loadGmailFiles = async () => {
     setGmailLoading(true);
     try {
-      const res = await authFetch(`${API_URL}/mail/files`, { method: "GET" });
+      const res = await authFetch(`${API_URL}/api/mail/files`, { method: "GET" });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`Failed to load Gmail files: ${res.status} ${text}`);
@@ -155,7 +289,7 @@ export default function Dashboard() {
 
   const handleDownloadGmailFile = async (fileId: string, filename: string) => {
     try {
-      const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
+      const res = await authFetch(`${API_URL}/api/mail/download/${fileId}`);
       if (!res.ok) {
         alert("Failed to download file");
         return;
@@ -281,7 +415,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ================= STATS CARDS ================= */}
+     
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
 
         {/* Total Documents */}
@@ -325,82 +459,84 @@ export default function Dashboard() {
 
       </div>
 
-      {/* ================= DOCUMENTS SECTION ================= */}
-      <div className="bg-white/80 backdrop-blur-lg p-8 rounded-3xl shadow-xl mb-12 border border-white/40">
-        
-        <div className="flex justify-between items-center mb-8">
-          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
-            <FileText className="w-6 h-6 text-blue-600" />
-            Recent Documents
-          </h2>
-
-          <div className="flex gap-3">
-            <button
-              onClick={loadData}
-              className="px-5 py-2.5 bg-gray-100 rounded-xl hover:bg-gray-200 transition flex items-center gap-2"
-            >
-              <RefreshCw className="w-4 h-4" /> Refresh
-            </button>
-
-            <button
-              onClick={() => navigate("/upload")}
-              className="px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-md hover:shadow-lg transition flex items-center gap-2"
-            >
-              <Upload className="w-4 h-4" /> Upload
-            </button>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="py-16 text-center text-gray-500">Loading...</div>
-        ) : filteredDocuments.length === 0 ? (
-          <div className="py-16 text-center">
-            <FileText className="w-12 h-12 mx-auto text-gray-300 mb-4" />
-            <p className="text-gray-500 text-lg">No documents found.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {filteredDocuments.map((doc) => (
-              <div
-                key={doc._id}
-                onClick={() => navigate(`/document/${doc._id}`)}
-                className="group bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer"
+      
+     {/* DOCUMENTS SECTION */}
+        <div className="bg-white/80 backdrop-blur-lg p-8 rounded-3xl shadow-xl mb-12 border border-white/40">
+          <div className="flex justify-between items-center mb-8">
+            <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-3">
+              <FileText className="w-6 h-6 text-blue-600" /> Recent Documents
+            </h2>
+            <div className="flex gap-3">
+              <button onClick={loadData} className="px-5 py-2.5 bg-gray-100 rounded-xl hover:bg-gray-200 transition flex items-center gap-2">
+                <RefreshCw className="w-4 h-4" /> Refresh
+              </button>
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 shadow-md transition flex items-center gap-2"
               >
-                <div className="flex justify-between mb-4">
-                  <h3 className="font-semibold text-gray-800 group-hover:text-blue-600 transition">
-                    {doc.title}
-                  </h3>
-                  <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(doc.urgency)}`}>
-                    {doc.urgency}
-                  </span>
-                </div>
-
-                <p className="text-sm text-gray-500 line-clamp-2 mb-4">
-                  {doc.summary}
-                </p>
-
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>
-                    {new Date(doc.createdAt).toLocaleDateString()}
-                  </span>
-                  {doc.department && (
-                    <span
-                      className="px-3 py-1 rounded-full text-xs"
-                      style={{
-                        backgroundColor: `${doc.department.color}15`,
-                        color: doc.department.color,
-                      }}
-                    >
-                      {doc.department.name}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
+                <Upload className="w-4 h-4" /> Upload
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleDirectUpload}
+              />
+            </div>
           </div>
-        )}
-      </div>
 
+          {loading ? (
+            <div className="py-16 text-center text-gray-500">Loading...</div>
+          ) : filteredDocuments.length === 0 ? (
+            <div className="py-16 text-center"><FileText className="w-12 h-12 mx-auto text-gray-300 mb-4" /><p className="text-gray-500 text-lg">No documents found.</p></div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {filteredDocuments.map((doc) => (
+                <div
+                  key={doc._id}
+                  onClick={() => navigate(`/document/${doc._id}`)}
+                  className="group bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col justify-between"
+                >
+                  <div>
+                    <div className="flex justify-between mb-4">
+                      <h3 className="font-semibold text-gray-800 group-hover:text-blue-600 transition line-clamp-1">{doc.title}</h3>
+                      <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(doc.urgency)}`}>{doc.urgency}</span>
+                    </div>
+                    <p className="text-sm text-gray-500 line-clamp-3 mb-4">{doc.summary}</p>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-xs text-gray-400 items-center mb-4">
+                      <span>{new Date(doc.createdAt).toLocaleDateString()}</span>
+                      {doc.department && (
+                        <span className="px-3 py-1 rounded-full text-xs" style={{ backgroundColor: `${doc.department.color}15`, color: doc.department.color }}>
+                          {doc.department.name}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* AI SUMMARY BUTTON */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation(); // Prevents navigating to details page
+                        if (doc.file_url) handleGenerateSummary(doc._id, doc.file_url);
+                      }}
+                      disabled={summarizingId === doc._id}
+                      className="w-full py-2 bg-blue-50 text-blue-700 rounded-xl text-xs font-bold hover:bg-blue-100 transition flex items-center justify-center gap-2 border border-blue-100"
+                    >
+                      {summarizingId === doc._id ? (
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      {summarizingId === doc._id ? "Summarizing..." : "AI Summary"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       {/* ================= GMAIL SECTION ================= */}
       <div className="bg-white/80 backdrop-blur-lg p-8 rounded-3xl shadow-xl border border-white/40">
         
@@ -422,10 +558,10 @@ export default function Dashboard() {
               onClick={async () => {
                 setGmailLoading(true);
                 try {
-                  const resp = await authFetch(`${API_URL}/mail/fetch`, {
+                  const resp = await authFetch(`${API_URL}/api/mail/fetch`, {
                     method: "POST",
                     body: JSON.stringify({}),
-                  });
+                  })
                   if (resp.ok) await loadGmailFiles();
                 } finally {
                   setGmailLoading(false);
@@ -455,38 +591,49 @@ export default function Dashboard() {
                 onClick={() => navigate(`/gmail-document/${file._id}`)}
                 className="group bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer"
               >
-                <div className="flex justify-between mb-4">
-                  <h3 className="font-semibold text-gray-800 group-hover:text-indigo-600 transition">
-                    {file.filename}
-                  </h3>
-                  <span className="px-3 py-1 rounded-full text-xs bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    {(file.length / 1024).toFixed(1)} KB
-                  </span>
-                </div>
+                <div>
+                    <div className="flex justify-between mb-4">
+                      <h3 className="font-semibold text-gray-800 group-hover:text-indigo-600 transition line-clamp-1">{file.filename}</h3>
+                      <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(file.urgency)}`}>{file.urgency}</span>
+                    </div>
+                    {/* {file.metadata?.subject && <p className="text-sm text-gray-500 line-clamp-2 mb-4">{file.metadata.subject}</p>} */}
+                    
+                    {file.summary && (
+                      <p className="text-sm text-gray-500 line-clamp-3 mb-4">
+                        {/* <Sparkles className="w-3 h-3 inline mr-1 text-purple-500"/>  */}
+                        {file.summary}
+                      </p>
+                    )}
+                  </div>
 
-                {file.metadata?.subject && (
-                  <p className="text-sm text-gray-500 line-clamp-2 mb-4">
-                    {file.metadata.subject}
-                  </p>
-                )}
+                <div>
+                    {/* <div className="flex justify-between text-xs text-gray-400 mb-4">
+                      <span>{new Date(file.uploadDate).toLocaleDateString()}</span>
+                      {file.metadata?.from && <span className="truncate max-w-[120px]">{file.metadata.from.split("<")[0].trim()}</span>}
+                    </div> */}
 
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>
-                    {new Date(file.uploadDate).toLocaleDateString()}
-                  </span>
-                  {file.metadata?.from && (
-                    <span className="truncate max-w-[120px]">
-                      {file.metadata.from.split("<")[0].trim()}
-                    </span>
-                  )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleGenerateGmailSummary(file._id, file.filename);
+                      }}
+                      disabled={gmailSummarizingId === file._id}
+                      className="w-full py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-bold hover:bg-indigo-100 transition flex items-center justify-center gap-2 border border-indigo-100"
+                    >
+                      {gmailSummarizingId === file._id ? (
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      {gmailSummarizingId === file._id ? "Summarizing..." : "AI Summary"}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-
-    </div>
-  </DashboardLayout>
-);
+    </DashboardLayout>
+  );
 }

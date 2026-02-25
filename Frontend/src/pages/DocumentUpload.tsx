@@ -47,7 +47,7 @@ export default function DocumentUpload() {
     formData.append("summary", summary);
 
     try {
-      const res = await authFetch(`${API_URL}/documents`, {
+      const res = await authFetch(`${API_URL}/api/documents`, {
         method: "POST",
         body: formData, // IMPORTANT: do NOT add content-type manually
       });

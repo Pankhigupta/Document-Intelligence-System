@@ -288,3 +288,35 @@ export const downloadMailFile = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+
+
+
+
+export const generateGmailSummary = async (req, res) => {
+  try {
+    console.log("Route hit");
+
+    const { fileId } = req.params;
+    const { summary } = req.body;
+    
+
+    const result = await mongoose.connection.db
+      .collection("mailUploads.files")
+      .updateOne(
+        { _id: new mongoose.Types.ObjectId(fileId) },
+        { $set: { summary} }
+      );
+
+    console.log("Matched:", result.matchedCount);
+    console.log("Modified:", result.modifiedCount);
+
+    res.json({ message: "Summary saved successfully" });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Error saving summary" });
+  }
+};

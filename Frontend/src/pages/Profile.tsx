@@ -57,7 +57,7 @@ export default function Profile() {
   const loadDepartment = async (deptId: string) => {
     try {
       setLoadingDept(true);
-      const res = await authFetch(`${API_URL}/departments`);
+      const res = await authFetch(`${API_URL}/api/departments`);
       if (!res.ok) return;
       const data: Department[] = await res.json();
       const found = data.find((d) => d.id === deptId || (d as any)._id === deptId);
@@ -82,7 +82,7 @@ export default function Profile() {
         responsibilities: formData.responsibilities
       };
 
-      const res = await authFetch(`${API_URL}/profile/me`, {
+      const res = await authFetch(`${API_URL}/api/profile/me`, {
         method: 'PUT',
         body: JSON.stringify(payload)
       });
