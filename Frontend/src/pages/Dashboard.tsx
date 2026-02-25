@@ -49,6 +49,7 @@ interface GmailFile {
     messageId: string;
   };
   summary?: string;
+  urgency: "high" | "medium" | "low";
 }
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
@@ -210,49 +211,59 @@ export default function Dashboard() {
   };
 
   // --- ✅ FIXED: GMAIL AI SUMMARY HANDLER ---
-  const handleGenerateGmailSummary = async (fileId: string, filename: string) => {
-    setGmailSummarizingId(fileId);
-    try {
-      // 1. Download from YOUR Backend (which fetches from GridFS/Mongo)
-      // Note: We use the existing download route which returns a stream
-      const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
-      
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Download failed: ${res.status} ${errText}`);
-      }
-      
-      const blob = await res.blob();
-      
-      // 2. Create a File object for the AI
-      // Important: Use the correct filename so AI knows the extension (pdf/docx/etc)
-      const file = new File([blob], filename, { type: blob.type });
+ const handleGenerateGmailSummary = async (fileId: string, filename: string) => {
+  setGmailSummarizingId(fileId);
 
-      // 3. Send to Python AI
-      const aiFormData = new FormData();
-      aiFormData.append("file", file);
+  try {
+    // 1️⃣ Download file from backend (GridFS)
+    const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
+    if (!res.ok) throw new Error("Download failed");
 
-      const aiRes = await fetch("http://127.0.0.1:8000/summarize", {
+    const blob = await res.blob();
+    const file = new File([blob], filename, { type: blob.type });
+
+    // 2️⃣ Send to Python AI
+    const aiFormData = new FormData();
+    aiFormData.append("file", file);
+
+    const aiRes = await fetch("http://127.0.0.1:8000/summarize", {
+      method: "POST",
+      body: aiFormData,
+    });
+
+    if (!aiRes.ok) throw new Error("AI failed");
+
+    const aiData = await aiRes.json();
+    const generatedSummary = aiData.summary;
+
+   
+    const saveRes = await authFetch(
+      `${API_URL}/mail/generate-summary/${fileId}`,
+      {
         method: "POST",
-        body: aiFormData,
-      });
+        body: JSON.stringify({ summary: generatedSummary }),
+      }
+    );
 
-      if (!aiRes.ok) throw new Error("AI Service failed");
-      
-      const aiData = await aiRes.json();
-      const generatedSummary = aiData.summary || "AI could not generate a summary.";
-
-      // 4. Update Local State (since Gmail files don't save summary to DB in this schema yet)
-      setGmailFiles(prev => prev.map(f => f._id === fileId ? { ...f, summary: generatedSummary } : f));
-
-    } catch (err: any) {
-      console.error("Gmail AI Error:", err);
-      alert(`Error: ${err.message}`);
-    } finally {
-      setGmailSummarizingId(null);
+    if (!saveRes.ok) {
+      const err = await saveRes.text();
+      throw new Error(err);
     }
-  };
 
+
+    setGmailFiles(prev =>
+      prev.map(f =>
+        f._id === fileId ? { ...f, summary: generatedSummary } : f
+      )
+    );
+
+  } catch (err: any) {
+    console.error("Gmail AI Error:", err);
+    alert(err.message);
+  } finally {
+    setGmailSummarizingId(null);
+  }
+};
 
   const loadGmailFiles = async () => {
     setGmailLoading(true);
@@ -580,23 +591,23 @@ export default function Dashboard() {
                 <div>
                     <div className="flex justify-between mb-4">
                       <h3 className="font-semibold text-gray-800 group-hover:text-indigo-600 transition line-clamp-1">{file.filename}</h3>
-                      <span className="px-3 py-1 rounded-full text-xs bg-indigo-50 text-indigo-700 border border-indigo-200">{(file.length / 1024).toFixed(1)} KB</span>
+                      <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(file.urgency)}`}>{file.urgency}</span>
                     </div>
-                    {file.metadata?.subject && <p className="text-sm text-gray-500 line-clamp-2 mb-4">{file.metadata.subject}</p>}
+                    {/* {file.metadata?.subject && <p className="text-sm text-gray-500 line-clamp-2 mb-4">{file.metadata.subject}</p>} */}
                     
                     {file.summary && (
-                      <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded-lg mb-4 border border-gray-100 line-clamp-3">
-                        <Sparkles className="w-3 h-3 inline mr-1 text-purple-500"/> 
+                      <p className="text-sm text-gray-500 line-clamp-3 mb-4">
+                        {/* <Sparkles className="w-3 h-3 inline mr-1 text-purple-500"/>  */}
                         {file.summary}
                       </p>
                     )}
                   </div>
 
                 <div>
-                    <div className="flex justify-between text-xs text-gray-400 mb-4">
+                    {/* <div className="flex justify-between text-xs text-gray-400 mb-4">
                       <span>{new Date(file.uploadDate).toLocaleDateString()}</span>
                       {file.metadata?.from && <span className="truncate max-w-[120px]">{file.metadata.from.split("<")[0].trim()}</span>}
-                    </div>
+                    </div> */}
 
                     <button
                       onClick={(e) => {

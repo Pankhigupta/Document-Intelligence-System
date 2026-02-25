@@ -8,7 +8,7 @@ import {
   listMailFiles,
   downloadMailFile,
   getMailFile,
-  generateMailSummary,
+  generateGmailSummary,
    // ✅ Add this import
 } from "../controllers/mailController.js";
 
@@ -23,6 +23,6 @@ router.post("/fetch", auth, fetchMailAttachments);
 router.get("/files", auth, listMailFiles);
 router.get("/file/:id", auth, getMailFile); // ✅ Get single file details
 router.get("/download/:id", auth, downloadMailFile); // ✅ Download file
-router.post("/generate-summary/:id", auth, generateMailSummary);
+router.post("/generate-summary/:fileId", auth, generateGmailSummary);
 
 export default router;
