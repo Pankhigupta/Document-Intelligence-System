@@ -7,7 +7,9 @@ import {
   fetchMailAttachments,
   listMailFiles,
   downloadMailFile,
-  getMailFile, // ✅ Add this import
+  getMailFile,
+  generateMailSummary,
+   // ✅ Add this import
 } from "../controllers/mailController.js";
 
 const router = express.Router();
@@ -21,5 +23,6 @@ router.post("/fetch", auth, fetchMailAttachments);
 router.get("/files", auth, listMailFiles);
 router.get("/file/:id", auth, getMailFile); // ✅ Get single file details
 router.get("/download/:id", auth, downloadMailFile); // ✅ Download file
+router.post("/generate-summary/:id", auth, generateMailSummary);
 
 export default router;

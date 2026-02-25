@@ -1,7 +1,7 @@
 // src/pages/GmailDocument.tsx
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Download, Mail, Clock, User, FileText } from "lucide-react";
+import { ArrowLeft, Download, Mail, Clock, User, FileText,Sparkles } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import DocumentViewer from "../components/DocumentViewer"; // ✅ Import the viewer
 
@@ -15,7 +15,10 @@ interface GmailFile {
     from: string;
     subject: string;
     messageId: string;
+    summary?: string; // ✅ Add summary to metadata
   };
+summary?: string; // ✅ Add summary field
+
 }
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
@@ -211,7 +214,7 @@ export default function GmailDocument() {
                 </div>
               )}
 
-              {/* File Info */}
+              {/* File Info
               <div className="mt-6 grid grid-cols-2 gap-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-500 mb-2">FILE SIZE</h3>
@@ -224,7 +227,7 @@ export default function GmailDocument() {
                     {new Date(file.uploadDate).toLocaleString()}
                   </p>
                 </div>
-              </div>
+              </div> */}
 
               {/* Sender Info */}
               {file.metadata?.from && (
@@ -246,6 +249,17 @@ export default function GmailDocument() {
                   </p>
                 </div>
               )}
+
+
+              {file.summary && (
+  <div className="bg-purple-50 border border-purple-200 p-4 rounded-xl mb-6">
+    <h3 className="font-semibold text-purple-700 mb-2 flex items-center gap-2">
+      <Sparkles className="w-4 h-4" />
+      AI Summary
+    </h3>
+    <p className="text-sm text-gray-700">{file.summary}</p>
+  </div>
+)}
             </div>
 
             {/* Preview Section */}

@@ -288,3 +288,45 @@ export const downloadMailFile = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+
+
+export const generateGmailSummary = async (req, res) => {
+  try {
+    const { fileId } = req.params;
+
+    console.log("File ID:", fileId);
+
+    // 1️⃣ Call Python backend
+    const pythonRes = await fetch("http://localhost:8000/generate-summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileId }),
+    });
+
+    const pythonData = await pythonRes.json();
+    const summary = pythonData.summary;
+
+    if (!summary) {
+      return res.status(400).json({ message: "No summary generated" });
+    }
+
+    // 2️⃣ Update GridFS document
+    const result = await mongoose.connection.db
+      .collection("mailUploads.files")  // ⚠️ MUST match bucket name
+      .updateOne(
+        { _id: new mongoose.Types.ObjectId(fileId) },
+        { $set: { summary: summary } }
+      );
+
+    console.log("Mongo Update Result:", result);
+
+    return res.json({ summary });
+
+  } catch (error) {
+    console.error("Generate Summary Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};

@@ -276,30 +276,6 @@ export default function DocumentDetail() {
   };
 
   // Fetch AI summary (server-side will call model or generate)
-  const fetchAISummary = async () => {
-    if (!id) return;
-    setSummaryLoading(true);
-    try {
-      const data = (await apiFetch(`/documents/${id}/summary`)) as { summary: string };
-      // update document summary
-      setDocument((d) => (d ? { ...d, summary: data.summary } : d));
-    } catch (err) {
-      console.error("AI summary fetch failed:", err);
-      alert(String(err));
-    } finally {
-      setSummaryLoading(false);
-    }
-  };
-
-  const fileDownloadUrl = (fileUrl?: string) => {
-    if (!fileUrl) return null;
-    // If backend returns full URL, use it. If relative (e.g. /uploads/...), prefix API host origin.
-    if (fileUrl.startsWith("http") || fileUrl.startsWith("https")) return fileUrl;
-    // remove leading slash if present when joining
-    const cleaned = fileUrl.startsWith("/") ? fileUrl.slice(1) : fileUrl;
-    const base = API_URL.replace(/\/api\/?$/, "");
-    return `${base}/${cleaned}`;
-  };
 
   if (loading || !profile) {
     return (
@@ -347,28 +323,6 @@ export default function DocumentDetail() {
               </p>
             </div>
           </div>
-
-          {/* <div className="flex items-center gap-3">
-            {document.file_url && (
-              <a
-                href={fileDownloadUrl(document.file_url) || "#"}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 px-3 py-2 border rounded hover:bg-gray-50"
-              >
-                <Download className="w-4 h-4" />
-                <span className="text-sm">Download</span>
-              </a>
-            )}
-
-            <button
-              onClick={() => fetchAISummary()}
-              className="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-60"
-              disabled={summaryLoading}
-            >
-              {summaryLoading ? "Summarizing..." : "Get AI Summary"}
-            </button>
-          </div> */}
         </div>
 
         {/* Main */}

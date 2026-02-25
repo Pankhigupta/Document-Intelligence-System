@@ -58,7 +58,8 @@ if (process.env.FILE_UPLOAD_PROVIDER === 'local') {
   const uploadsDir = process.env.UPLOADS_DIR || './src/uploads';
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-  app.use('/uploads', express.static('src/uploads'));
+  app.use('/api/uploads', express.static('src/uploads'));
+ app.use('/uploads', express.static('src/uploads'));
 }
 
 app.use('/api/auth', authRoutes);
