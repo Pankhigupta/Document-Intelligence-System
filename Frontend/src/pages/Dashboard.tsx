@@ -52,8 +52,17 @@ interface GmailFile {
   urgency: "high" | "medium" | "low";
 }
 
+interface IngestResponse {
+  summary?: string;
+  classification?: {
+    label: string;
+    confidence: number;
+  };
+}
+
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 const API_URL = `${BASE_URL}`.replace(/\/$/, "");
+const AI_BASE_URL = "http://127.0.0.1:8000";
 
 export async function authFetch(url: string, options: RequestInit = {}) {
   const token = localStorage.getItem("token");
@@ -146,6 +155,56 @@ export default function Dashboard() {
     setLoading(false);
   };
 
+  const runClassifierAndSummarizer = async (file: File): Promise<IngestResponse> => {
+    const aiFormData = new FormData();
+    aiFormData.append("file", file);
+
+    const aiRes = await fetch(`${AI_BASE_URL}/ingest`, {
+      method: "POST",
+      body: aiFormData,
+    });
+
+    if (!aiRes.ok) {
+      const text = await aiRes.text().catch(() => "");
+      throw new Error(`AI ingest failed: ${aiRes.status} ${text}`);
+    }
+
+    return aiRes.json();
+  };
+
+  const processGmailFileWithAI = async (file: GmailFile) => {
+    try {
+      const res = await authFetch(`${API_URL}/api/mail/download/${file._id}`);
+      if (!res.ok) throw new Error(`Download failed for ${file.filename}`);
+
+      const blob = await res.blob();
+      const uploadFile = new File([blob], file.filename, { type: blob.type });
+      const aiData = await runClassifierAndSummarizer(uploadFile);
+      const generatedSummary = aiData.summary || "AI could not generate a summary.";
+
+      const saveRes = await authFetch(
+        `${API_URL}/api/mail/generate-summary/${file._id}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ summary: generatedSummary }),
+        }
+      );
+
+      if (!saveRes.ok) {
+        const err = await saveRes.text().catch(() => "");
+        throw new Error(`Failed to save Gmail summary: ${err}`);
+      }
+
+      setGmailFiles((prev) =>
+        prev.map((f) =>
+          f._id === file._id ? { ...f, summary: generatedSummary } : f
+        )
+      );
+    } catch (error) {
+      console.error("Auto AI processing failed for Gmail file:", file._id, error);
+    }
+  };
+
 // --- NEW: DIRECT UPLOAD HANDLER ---
   const handleDirectUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -164,6 +223,20 @@ export default function Dashboard() {
       });
 
       if (res.ok) {
+        const uploadedDoc = await res.json();
+
+        try {
+          const aiData = await runClassifierAndSummarizer(file);
+          const generatedSummary = aiData.summary || "AI could not generate a summary.";
+
+          await authFetch(`${API_URL}/api/documents/${uploadedDoc._id}`, {
+            method: "PUT",
+            body: JSON.stringify({ summary: generatedSummary }),
+          });
+        } catch (aiErr) {
+          console.error("Auto classifier+summarizer failed after upload:", aiErr);
+        }
+
         await loadData(); // Refresh list immediately
       } else {
         alert("Upload failed");
@@ -268,7 +341,7 @@ export default function Dashboard() {
   }
 };
 
-  const loadGmailFiles = async () => {
+  const loadGmailFiles = async (): Promise<GmailFile[]> => {
     setGmailLoading(true);
     try {
       const res = await authFetch(`${API_URL}/api/mail/files`, { method: "GET" });
@@ -278,10 +351,13 @@ export default function Dashboard() {
       }
       const files = await res.json();
       console.log("📧 Gmail files loaded:", files);
-      setGmailFiles(Array.isArray(files) ? files : files.data || []);
+      const normalizedFiles = Array.isArray(files) ? files : files.data || [];
+      setGmailFiles(normalizedFiles);
+      return normalizedFiles;
     } catch (e) {
       console.error("Gmail fetch error:", e);
       setGmailFiles([]);
+      return [];
     } finally {
       setGmailLoading(false);
     }
@@ -562,7 +638,11 @@ export default function Dashboard() {
                     method: "POST",
                     body: JSON.stringify({}),
                   })
-                  if (resp.ok) await loadGmailFiles();
+                  if (resp.ok) {
+                    const files = await loadGmailFiles();
+                    const filesNeedingSummary = files.filter((f) => !f.summary);
+                    await Promise.all(filesNeedingSummary.map(processGmailFileWithAI));
+                  }
                 } finally {
                   setGmailLoading(false);
                 }
