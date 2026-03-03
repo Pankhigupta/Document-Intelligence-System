@@ -64,6 +64,20 @@ export default function ManualReview() {
     const wanted = normalizeName(name || "");
     if (!wanted) return "";
     const match = sourceDepartments.find((d) => normalizeName(d.name) === wanted);
+    if (match?._id) return match._id;
+
+    // Common fallback mappings from AI suggestion labels to actual department names.
+    const alias: Record<string, string> = {
+      operations: "admin",
+      operation: "admin",
+      finances: "finance",
+    };
+    const aliasTarget = alias[wanted];
+    if (aliasTarget) {
+      const aliasMatch = sourceDepartments.find((d) => normalizeName(d.name) === aliasTarget);
+      if (aliasMatch?._id) return aliasMatch._id;
+    }
+
     return match?._id || "";
   };
 
@@ -101,8 +115,14 @@ export default function ManualReview() {
         const defaults: Record<string, string> = {};
         docs.forEach((doc) => {
           const suggested = doc.metadata?.manual_review?.suggested_department || "";
-          const deptId = getDeptIdByName(suggested, depts);
-          if (deptId) defaults[doc._id] = deptId;
+          const suggestedDeptId = getDeptIdByName(suggested, depts);
+          const currentDeptId =
+            typeof doc.department_id === "string" ? doc.department_id : doc.department_id?._id || "";
+          if (suggestedDeptId) {
+            defaults[doc._id] = suggestedDeptId;
+          } else if (currentDeptId) {
+            defaults[doc._id] = currentDeptId;
+          }
         });
         setSelectedDeptByDoc(defaults);
       } catch (error) {
@@ -239,6 +259,7 @@ export default function ManualReview() {
                         {departments.map((d) => (
                           <option key={d._id} value={d._id}>
                             {d.name}
+                            {normalizeName(review?.suggested_department) === normalizeName(d.name) ? " (Recommended)" : ""}
                           </option>
                         ))}
                       </select>
