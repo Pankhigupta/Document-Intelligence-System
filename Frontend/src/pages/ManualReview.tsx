@@ -55,6 +55,8 @@ export default function ManualReview() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [selectedDeptByDoc, setSelectedDeptByDoc] = useState<Record<string, string>>({});
 
+  const FALLBACK_DEPARTMENT_NAMES = ["Finance", "HR", "Legal", "Operations", "Procurement", "Admin"];
+
   const normalizeName = (value?: string) =>
     (value || "").trim().toLowerCase().replace(/\s+/g, " ");
   const toDepartmentSlug = (departmentName: string) =>
@@ -81,6 +83,12 @@ export default function ManualReview() {
     return match?._id || "";
   };
 
+  const getDeptByName = (name?: string | null, sourceDepartments: Department[] = departments) => {
+    const wanted = normalizeName(name || "");
+    if (!wanted) return undefined;
+    return sourceDepartments.find((d) => normalizeName(d.name) === wanted);
+  };
+
   const manualReviewDocs = useMemo(
     () =>
       documents.filter((doc) => {
@@ -94,6 +102,23 @@ export default function ManualReview() {
       }),
     [documents]
   );
+
+  const departmentOptions = useMemo(() => {
+    const allNames: string[] = [];
+    const pushUnique = (name?: string) => {
+      const trimmed = (name || "").trim();
+      if (!trimmed) return;
+      if (!allNames.some((n) => normalizeName(n) === normalizeName(trimmed))) {
+        allNames.push(trimmed);
+      }
+    };
+
+    departments.forEach((d) => pushUnique(d.name));
+    manualReviewDocs.forEach((doc) => pushUnique(doc.metadata?.manual_review?.suggested_department || ""));
+    FALLBACK_DEPARTMENT_NAMES.forEach((name) => pushUnique(name));
+
+    return allNames.sort((a, b) => a.localeCompare(b));
+  }, [departments, manualReviewDocs]);
 
   useEffect(() => {
     const load = async () => {
@@ -115,13 +140,14 @@ export default function ManualReview() {
         const defaults: Record<string, string> = {};
         docs.forEach((doc) => {
           const suggested = doc.metadata?.manual_review?.suggested_department || "";
-          const suggestedDeptId = getDeptIdByName(suggested, depts);
-          const currentDeptId =
-            typeof doc.department_id === "string" ? doc.department_id : doc.department_id?._id || "";
-          if (suggestedDeptId) {
-            defaults[doc._id] = suggestedDeptId;
-          } else if (currentDeptId) {
-            defaults[doc._id] = currentDeptId;
+          const currentDeptId = typeof doc.department_id === "string" ? doc.department_id : doc.department_id?._id || "";
+          const currentDeptName =
+            typeof doc.department_id === "object" ? doc.department_id?.name || "" : depts.find((d) => d._id === currentDeptId)?.name || "";
+
+          if ((suggested || "").trim()) {
+            defaults[doc._id] = suggested;
+          } else if (currentDeptName) {
+            defaults[doc._id] = currentDeptName;
           }
         });
         setSelectedDeptByDoc(defaults);
@@ -135,17 +161,13 @@ export default function ManualReview() {
   }, []);
 
   const onRouteDocument = async (doc: DocumentItem) => {
-    const selectedDepartmentId = selectedDeptByDoc[doc._id];
-    if (!selectedDepartmentId) {
+    const selectedDepartmentName = (selectedDeptByDoc[doc._id] || "").trim();
+    if (!selectedDepartmentName) {
       alert("Select a department first.");
       return;
     }
 
-    const chosen = departments.find((d) => d._id === selectedDepartmentId);
-    if (!chosen) {
-      alert("Invalid department selection.");
-      return;
-    }
+    const chosen = getDeptByName(selectedDepartmentName);
 
     setRoutingId(doc._id);
     try {
@@ -155,15 +177,15 @@ export default function ManualReview() {
       const res = await authFetch(`${API_URL}/api/documents/${doc._id}`, {
         method: "PUT",
         body: JSON.stringify({
-          department_id: chosen._id,
-          routed_department: chosen.name,
+          department_id: chosen?._id || null,
+          routed_department: selectedDepartmentName,
           metadata: {
             ...existingMetadata,
             manual_review: {
               ...existingManualReview,
               required: false,
               status: "resolved",
-              decided_department: chosen.name,
+              decided_department: selectedDepartmentName,
             },
           },
         }),
@@ -179,7 +201,7 @@ export default function ManualReview() {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            route_to: chosen.name,
+            route_to: selectedDepartmentName,
             note: "routed_by_manual_review",
           }),
         });
@@ -190,7 +212,7 @@ export default function ManualReview() {
         }
       }
 
-      triggerTabPulse(`/department/${toDepartmentSlug(chosen.name)}`);
+      triggerTabPulse(`/department/${toDepartmentSlug(selectedDepartmentName)}`);
 
       setDocuments((prev) => prev.filter((d) => d._id !== doc._id));
     } catch (error) {
@@ -256,10 +278,10 @@ export default function ManualReview() {
                         className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
                       >
                         <option value="">Choose department</option>
-                        {departments.map((d) => (
-                          <option key={d._id} value={d._id}>
-                            {d.name}
-                            {normalizeName(review?.suggested_department) === normalizeName(d.name) ? " (Recommended)" : ""}
+                        {departmentOptions.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                            {normalizeName(review?.suggested_department) === normalizeName(name) ? " (Recommended)" : ""}
                           </option>
                         ))}
                       </select>
