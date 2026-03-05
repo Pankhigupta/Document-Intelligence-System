@@ -1,5 +1,5 @@
 // src/pages/Dashboard.tsx
-import { useState, useEffect,useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Upload,
@@ -34,6 +34,21 @@ interface DocumentWithDetails {
   title: string;
   summary: string;
   urgency: "high" | "medium" | "low";
+  priority?: {
+    priority_score?: number;
+    priority_level?: "Low" | "Medium" | "High" | "Critical";
+    breakdown?: {
+      sender_weight?: number;
+      deadline_score?: number;
+      urgency_score?: number;
+      doc_type_weight?: number;
+    };
+    escalation?: {
+      applied?: boolean;
+      reason?: string;
+    };
+    engine_version?: string;
+  } | null;
   department_id: string;
   routed_department?: string;
   uploaded_by?: string | { _id?: string };
@@ -55,7 +70,7 @@ interface GmailFile {
     linkedDocumentId?: string;
   };
   summary?: string;
-  urgency: "high" | "medium" | "low";
+  urgency?: "high" | "medium" | "low";
 }
 
 interface IngestResponse {
@@ -63,6 +78,29 @@ interface IngestResponse {
   classification?: {
     label: string;
     confidence: number;
+  };
+  extraction?: {
+    sender?: { name?: string | null; category?: string };
+    document_type?: string;
+    selected_deadline?: string | null;
+    urgency_indicators?: string[];
+    extraction_model_version?: string;
+    extraction_confidence?: number;
+  };
+  priority?: {
+    priority_score?: number;
+    priority_level?: "Low" | "Medium" | "High" | "Critical";
+    breakdown?: {
+      sender_weight?: number;
+      deadline_score?: number;
+      urgency_score?: number;
+      doc_type_weight?: number;
+    };
+    escalation?: {
+      applied?: boolean;
+      reason?: string;
+    };
+    engine_version?: string;
   };
   actions?: {
     email?: { route_to?: string };
@@ -357,6 +395,13 @@ export default function Dashboard() {
       const routedDepartment = getRoutedDepartmentName(aiData);
       const needsManualReview = isManualReviewRequired(aiData);
       const suggestedDepartment = getSuggestedDepartmentFromLabel(aiData.classification?.label);
+      const priorityLevel = aiData.priority?.priority_level || "Medium";
+      const urgencyFromPriority =
+        priorityLevel === "Critical" || priorityLevel === "High"
+          ? "high"
+          : priorityLevel === "Medium"
+          ? "medium"
+          : "low";
       const deptList = await ensureDepartmentsLoaded();
       const routedDepartmentId = getDepartmentIdByName(routedDepartment, deptList);
 
@@ -368,9 +413,12 @@ export default function Dashboard() {
           method: "PUT",
           body: JSON.stringify({
             summary: generatedSummary,
+            urgency: urgencyFromPriority,
             ...(needsManualReview ? { routed_department: "manual_review", department_id: null } : {}),
             ...(routedDepartment ? { routed_department: routedDepartment } : {}),
             ...(routedDepartmentId ? { department_id: routedDepartmentId } : {}),
+            ...(aiData.extraction ? { extraction: aiData.extraction } : {}),
+            ...(aiData.priority ? { priority: aiData.priority } : {}),
             ...(needsManualReview
               ? {
                   metadata: {
@@ -404,20 +452,27 @@ export default function Dashboard() {
         if (createDocRes.ok) {
           const createdDoc = await createDocRes.json();
           linkedDocumentId = createdDoc?._id;
-          if (linkedDocumentId && needsManualReview) {
+          if (linkedDocumentId) {
             await authFetch(`${API_URL}/api/documents/${linkedDocumentId}`, {
               method: "PUT",
               body: JSON.stringify({
-                department_id: null,
-                metadata: {
-                  manual_review: {
-                    required: true,
-                    status: "pending",
-                    suggested_department: suggestedDepartment,
-                    predicted_label: aiData.classification?.label || "",
-                    confidence: aiData.classification?.confidence ?? 0,
-                  },
-                },
+                urgency: urgencyFromPriority,
+                ...(aiData.extraction ? { extraction: aiData.extraction } : {}),
+                ...(aiData.priority ? { priority: aiData.priority } : {}),
+                ...(needsManualReview ? { department_id: null } : {}),
+                ...(needsManualReview
+                  ? {
+                      metadata: {
+                        manual_review: {
+                          required: true,
+                          status: "pending",
+                          suggested_department: suggestedDepartment,
+                          predicted_label: aiData.classification?.label || "",
+                          confidence: aiData.classification?.confidence ?? 0,
+                        },
+                      },
+                    }
+                  : {}),
               }),
             });
           }
@@ -494,15 +549,25 @@ export default function Dashboard() {
       routedDepartmentToNavigate = routedDepartment;
       const deptList = await ensureDepartmentsLoaded();
       const routedDepartmentId = getDepartmentIdByName(routedDepartment, deptList);
+      const priorityLevel = aiData.priority?.priority_level || "Medium";
+      const urgencyFromPriority =
+        priorityLevel === "Critical" || priorityLevel === "High"
+          ? "high"
+          : priorityLevel === "Medium"
+          ? "medium"
+          : "low";
 
           await authFetch(`${API_URL}/api/documents/${uploadedDoc._id}`, {
         method: "PUT",
         body: JSON.stringify({
           summary: generatedSummary,
+          urgency: urgencyFromPriority,
           ...(needsManualReview ? { routed_department: "manual_review", department_id: null } : {}),
           ...(routedDepartmentId ? { department_id: routedDepartmentId } : {}),
           ...(routedDepartment ? { routed_department: routedDepartment } : {}),
           ...(pythonFileId ? { python_file_id: pythonFileId } : {}),
+          ...(aiData.extraction ? { extraction: aiData.extraction } : {}),
+          ...(aiData.priority ? { priority: aiData.priority } : {}),
           ...(needsManualReview
             ? {
                 metadata: {
@@ -723,7 +788,50 @@ export default function Dashboard() {
       high: "bg-red-100 text-red-800 border-red-200",
       medium: "bg-yellow-100 text-yellow-800 border-yellow-200",
       low: "bg-green-100 text-green-800 border-green-200",
+      unscored: "bg-slate-100 text-slate-700 border-slate-200",
     }[u] || "");
+
+  const getGmailUrgencyLabel = (file: GmailFile): "high" | "medium" | "low" | "unscored" => {
+    const raw = (file.urgency || "").toLowerCase();
+    if (raw === "high" || raw === "medium" || raw === "low") return raw;
+    return "unscored";
+  };
+
+  const getGmailDepartmentLabel = (file: GmailFile): string => {
+    const routed = (file.metadata?.routedDepartment || "").trim();
+    return routed || "Unrouted";
+  };
+
+  const getDepartmentBadgeStyle = (departmentName?: string) => {
+    const normalized = (departmentName || "").trim().toLowerCase();
+    const departmentMatch = departments.find(
+      (d) => d.name.trim().toLowerCase() === normalized
+    );
+
+    if (departmentMatch?.color) {
+      return {
+        backgroundColor: `${departmentMatch.color}15`,
+        color: departmentMatch.color,
+      };
+    }
+
+    if (normalized === "manual_review") {
+      return { backgroundColor: "#fef3c715", color: "#b45309" };
+    }
+    if (normalized === "unrouted") {
+      return { backgroundColor: "#e2e8f015", color: "#475569" };
+    }
+
+    return { backgroundColor: "#e2e8f015", color: "#475569" };
+  };
+
+  const getPriorityColor = (level?: string) =>
+    ({
+      Critical: "bg-rose-100 text-rose-800 border-rose-200",
+      High: "bg-orange-100 text-orange-800 border-orange-200",
+      Medium: "bg-amber-100 text-amber-800 border-amber-200",
+      Low: "bg-emerald-100 text-emerald-800 border-emerald-200",
+    }[level || ""] || "bg-slate-100 text-slate-700 border-slate-200");
 
   const getDepartmentIcon = (name: string) => {
     const icons: any = { HR: Users, Finance: DollarSign, Legal: Scale, Admin: Briefcase, Procurement: ShoppingCart };
@@ -855,7 +963,10 @@ export default function Dashboard() {
             <div>
               <p className="text-gray-500 text-sm">High Priority</p>
               <h2 className="text-3xl font-bold text-red-600 mt-1">
-                {documents.filter(d => d.urgency === "high").length}
+                {documents.filter((d) => {
+                  const level = d.priority?.priority_level;
+                  return d.urgency === "high" || level === "High" || level === "Critical";
+                }).length}
               </h2>
             </div>
             <Clock className="w-10 h-10 text-red-500" />
@@ -940,7 +1051,9 @@ export default function Dashboard() {
                     <div className="flex justify-between mb-4">
                       <h3 className="font-semibold text-gray-800 group-hover:text-blue-600 transition line-clamp-1">{doc.title}</h3>
                       <div className="flex items-center gap-2">
-                        <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(doc.urgency)}`}>{doc.urgency}</span>
+                        <span className={`px-3 py-1 rounded-full text-xs border ${getPriorityColor(doc.priority?.priority_level)}`}>
+                          {doc.priority?.priority_level || "Unscored"}
+                        </span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1050,13 +1163,15 @@ export default function Dashboard() {
               <div
                 key={file._id}
                 onClick={() => navigate(`/gmail-document/${file._id}`)}
-                className="group bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer"
+                className="group bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col justify-between"
               >
                 <div>
                     <div className="flex justify-between mb-4">
                       <h3 className="font-semibold text-gray-800 group-hover:text-indigo-600 transition line-clamp-1">{file.filename}</h3>
                       <div className="flex items-center gap-2">
-                        <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(file.urgency)}`}>{file.urgency}</span>
+                        <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(getGmailUrgencyLabel(file))}`}>
+                          {getGmailUrgencyLabel(file)}
+                        </span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1081,10 +1196,15 @@ export default function Dashboard() {
                   </div>
 
                 <div>
-                    {/* <div className="flex justify-between text-xs text-gray-400 mb-4">
+                    <div className="flex justify-between text-xs text-gray-400 items-center mb-4">
                       <span>{new Date(file.uploadDate).toLocaleDateString()}</span>
-                      {file.metadata?.from && <span className="truncate max-w-[120px]">{file.metadata.from.split("<")[0].trim()}</span>}
-                    </div> */}
+                      <span
+                        className="px-3 py-1 rounded-full text-xs"
+                        style={getDepartmentBadgeStyle(getGmailDepartmentLabel(file))}
+                      >
+                        {getGmailDepartmentLabel(file)}
+                      </span>
+                    </div>
 
                     <button
                       onClick={(e) => {

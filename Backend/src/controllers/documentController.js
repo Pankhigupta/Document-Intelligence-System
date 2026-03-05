@@ -3,6 +3,8 @@ import Notification from '../models/Notification.js';
 import Document from '../models/Document.js';
 import DocumentPermission from '../models/DocumentPermission.js';
 import DocumentVersion from '../models/DocumentVersion.js';
+import DocumentExtraction from '../models/DocumentExtraction.js';
+import DocumentPriority from '../models/DocumentPriority.js';
 import User from '../models/User.js';
 import { uploadProvider, uploadToS3 } from '../utils/upload.js';
 import { sendNotification } from "../utils/sendNotification.js";
@@ -16,6 +18,14 @@ const formatDocumentForClient = (doc) => {
     plain.department = plain.department_id;
   }
   return plain;
+};
+
+const mapPriorityLevelToUrgency = (priorityLevel) => {
+  const normalized = String(priorityLevel || "").trim().toLowerCase();
+  if (normalized === "critical" || normalized === "high") return "high";
+  if (normalized === "medium") return "medium";
+  if (normalized === "low") return "low";
+  return "medium";
 };
 
 export const createDocument = async (req, res) => {
@@ -38,6 +48,7 @@ export const createDocument = async (req, res) => {
       } else {
         payload.file_url = `/uploads/${req.file.filename}`;
       }
+      payload.file_type = req.file.mimetype;
     }
 
     const doc = await Document.create(payload);
@@ -82,7 +93,11 @@ export const getDocument = async (req, res) => {
       .populate('department_id', 'name color');
     if (!doc) return res.status(404).json({ message: 'Document not found' });
 
-    res.json(formatDocumentForClient(doc));
+    const priority = await DocumentPriority.findOne({ document_id: doc._id }).lean();
+    res.json({
+      ...formatDocumentForClient(doc),
+      priority: priority || null,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -95,7 +110,23 @@ export const listDocuments = async (req, res) => {
       .populate('department_id', 'name color')
       .sort({ createdAt: -1 });
 
-    res.json(docs.map(formatDocumentForClient));
+    const docIds = docs.map((d) => d._id);
+    const priorities = await DocumentPriority.find({
+      document_id: { $in: docIds },
+    }).lean();
+    const priorityByDocumentId = new Map(
+      priorities.map((p) => [String(p.document_id), p])
+    );
+
+    res.json(
+      docs.map((doc) => {
+        const formatted = formatDocumentForClient(doc);
+        return {
+          ...formatted,
+          priority: priorityByDocumentId.get(String(doc._id)) || null,
+        };
+      })
+    );
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -130,6 +161,65 @@ export const updateDocument = async (req, res) => {
       } else {
         req.body.file_url = `/uploads/${req.file.filename}`;
       }
+      req.body.file_type = req.file.mimetype;
+    }
+
+    const extractionPayload = req.body.extraction;
+    if (extractionPayload && typeof extractionPayload === "object") {
+      const parsedDeadline = extractionPayload.selected_deadline
+        ? new Date(extractionPayload.selected_deadline)
+        : null;
+      const safeSelectedDeadline =
+        parsedDeadline && !Number.isNaN(parsedDeadline.getTime())
+          ? parsedDeadline
+          : null;
+
+      const extractionDoc = {
+        document_id: id,
+        sender: extractionPayload.sender || {},
+        document_type: extractionPayload.document_type || "",
+        dates: {
+          selected_deadline: safeSelectedDeadline,
+        },
+        urgency_indicators: Array.isArray(extractionPayload.urgency_indicators)
+          ? extractionPayload.urgency_indicators
+          : [],
+        extraction_model_version:
+          extractionPayload.extraction_model_version || "rule-v1",
+        extraction_confidence:
+          typeof extractionPayload.extraction_confidence === "number"
+            ? extractionPayload.extraction_confidence
+            : 0,
+      };
+
+      await DocumentExtraction.findOneAndUpdate(
+        { document_id: id },
+        { $set: extractionDoc },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
+
+    const priorityPayload = req.body.priority;
+    if (priorityPayload && typeof priorityPayload === "object") {
+      const priorityDoc = {
+        document_id: id,
+        priority_score:
+          typeof priorityPayload.priority_score === "number"
+            ? priorityPayload.priority_score
+            : 0,
+        priority_level: priorityPayload.priority_level || "Low",
+        breakdown: priorityPayload.breakdown || {},
+        escalation: priorityPayload.escalation || { applied: false, reason: "none" },
+        engine_version: priorityPayload.engine_version || "rule-v1",
+      };
+
+      await DocumentPriority.findOneAndUpdate(
+        { document_id: id },
+        { $set: priorityDoc },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      req.body.urgency = mapPriorityLevelToUrgency(priorityDoc.priority_level);
     }
 
     const updated = await Document.findByIdAndUpdate(id, req.body, {
@@ -161,7 +251,11 @@ export const updateDocument = async (req, res) => {
       "info"
     );
 
-    res.json(updated);
+    const updatedPriority = await DocumentPriority.findOne({ document_id: id }).lean();
+    res.json({
+      ...formatDocumentForClient(updated),
+      priority: updatedPriority || null,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -192,7 +286,8 @@ export const uploadDocument = async (req, res) => {
       title: req.body.title,
       content: req.body.content || "",
       uploaded_by: req.userId,
-      file_url: req.file ? `/uploads/${req.file.filename}` : null
+      file_url: req.file ? `/uploads/${req.file.filename}` : null,
+      file_type: req.file?.mimetype || null,
     };
 
     const doc = await Document.create(payload);

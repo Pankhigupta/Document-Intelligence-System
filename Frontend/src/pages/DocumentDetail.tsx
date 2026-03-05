@@ -24,6 +24,10 @@ interface DocumentWithDetails {
   content?: string;
   summary?: string;
   urgency?: Urgency;
+  priority?: {
+    priority_score?: number;
+    priority_level?: "Low" | "Medium" | "High" | "Critical";
+  } | null;
   uploaded_by?: { _id: string; full_name: string; email: string } | string;
   createdAt?: string;
   department?: { name?: string };
@@ -141,39 +145,37 @@ export default function DocumentDetail() {
     if (!id || !profile) return;
     setLoading(true);
     try {
-      // Document
       const doc = (await apiFetch(`/api/documents/${id}`)) as DocumentWithDetails;
       setDocument(doc);
-
-      // comments
-      const fetchedComments = (await apiFetch(
-        `/api/comments/${id}`
-      )) as Comment[];
-      setComments(fetchedComments || []);
-
-      // notes
-      const fetchedNotes = (await apiFetch(`/api/notes/${id}`)) as Note[];
-      setNotes(fetchedNotes || []);
-
-      // highlights
-      const fetchedHighlights = (await apiFetch(
-        `/api/highlights/${id}`
-      )) as Highlight[];
-      setHighlights(fetchedHighlights || []);
-
-      // permissions
-      const fetchedPerms = (await apiFetch(
-        `/api/permissions/${id}`
-      )) as DocumentPermission[];
-      setPermissions(fetchedPerms || []);
-
-      // all profiles (for granting permission)
-      const fetchedProfiles = (await apiFetch(`/api/profiles`)) as Profile[];
-      setAllProfiles(fetchedProfiles || []);
     } catch (err) {
       console.error("Error loading document:", err);
-      // optionally show toast
     } finally {
+      const [
+        commentsRes,
+        notesRes,
+        highlightsRes,
+        permissionsRes,
+        profilesRes,
+      ] = await Promise.allSettled([
+        apiFetch(`/api/comments/${id}`),
+        apiFetch(`/api/notes/${id}`),
+        apiFetch(`/api/highlights/${id}`),
+        apiFetch(`/api/permissions/${id}`),
+        apiFetch(`/api/auth/users`),
+      ]);
+
+      if (commentsRes.status === "fulfilled") setComments((commentsRes.value as Comment[]) || []);
+      if (notesRes.status === "fulfilled") setNotes((notesRes.value as Note[]) || []);
+      if (highlightsRes.status === "fulfilled") setHighlights((highlightsRes.value as Highlight[]) || []);
+      if (permissionsRes.status === "fulfilled") setPermissions((permissionsRes.value as DocumentPermission[]) || []);
+      if (profilesRes.status === "fulfilled") setAllProfiles((profilesRes.value as Profile[]) || []);
+
+      if (commentsRes.status === "rejected") console.error("Comments load failed:", commentsRes.reason);
+      if (notesRes.status === "rejected") console.error("Notes load failed:", notesRes.reason);
+      if (highlightsRes.status === "rejected") console.error("Highlights load failed:", highlightsRes.reason);
+      if (permissionsRes.status === "rejected") console.error("Permissions load failed:", permissionsRes.reason);
+      if (profilesRes.status === "rejected") console.error("Users load failed:", profilesRes.reason);
+
       setLoading(false);
     }
   }, [id, profile, apiFetch]);
@@ -342,6 +344,9 @@ export default function DocumentDetail() {
                     }`}
                   >
                     {(document.urgency || "medium").toUpperCase()} PRIORITY
+                  </span>
+                  <span className="px-3 py-1 rounded-full text-sm font-medium bg-slate-100 text-slate-700">
+                    SCORE: {document.priority?.priority_score ?? "N/A"} | LEVEL: {document.priority?.priority_level || "Unscored"}
                   </span>
 
                   <span className="text-sm text-gray-500">

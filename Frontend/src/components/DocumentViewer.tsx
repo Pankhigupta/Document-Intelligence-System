@@ -47,6 +47,8 @@ export default function DocumentViewer({
   const [docHtml, setDocHtml] = useState<string>("");
   const [sheetHtml, setSheetHtml] = useState<string>("");
   const [officeLoading, setOfficeLoading] = useState(false);
+  const [resolvedFileName, setResolvedFileName] = useState<string>(fileName);
+  const [resolvedFileType, setResolvedFileType] = useState<string>(fileType || "");
 
   useEffect(() => {
     loadDocument();
@@ -55,13 +57,50 @@ export default function DocumentViewer({
         URL.revokeObjectURL(viewUrl);
       }
     };
-  }, [fileUrl, fileId, pythonFileId]);
+  }, [fileUrl, fileId, pythonFileId, fileName, fileType]);
 
-  const getPythonBlobUrl = async (pyId: string) => {
+  const getFilenameFromContentDisposition = (contentDisposition: string | null) => {
+    if (!contentDisposition) return "";
+    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match?.[1]) {
+      try {
+        return decodeURIComponent(utf8Match[1]).replace(/^["']|["']$/g, "");
+      } catch {
+        return utf8Match[1].replace(/^["']|["']$/g, "");
+      }
+    }
+    const asciiMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+    return asciiMatch?.[1] || "";
+  };
+
+  const getPythonBlobData = async (pyId: string) => {
+    let metadataFilename = "";
+    let metadataType = "";
+    try {
+      const metadataRes = await fetch(`${AI_BASE_URL}/documents/${pyId}`);
+      if (metadataRes.ok) {
+        const metadata = await metadataRes.json();
+        metadataFilename = metadata?.filename || "";
+        metadataType = metadata?.metadata?.content_type || "";
+      }
+    } catch {
+      // Metadata endpoint is optional for preview and can be skipped on failure.
+    }
+
     const res = await fetch(`${AI_BASE_URL}/documents/${pyId}/download`);
     if (!res.ok) throw new Error("Failed to fetch DB-backed file");
+
     const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    const headerFilename = getFilenameFromContentDisposition(res.headers.get("content-disposition"));
+    const filename = headerFilename || metadataFilename || fileName || "document";
+    const contentType =
+      res.headers.get("content-type") || blob.type || metadataType || "application/octet-stream";
+
+    return {
+      blobUrl: URL.createObjectURL(blob),
+      filename,
+      contentType,
+    };
   };
 
   // Process office files once viewUrl is ready
@@ -100,10 +139,14 @@ export default function DocumentViewer({
     setError("");
     setDocHtml("");
     setSheetHtml("");
+    setResolvedFileName(fileName);
+    setResolvedFileType(fileType || "");
 
     try {
       if (fileUrl) {
         setViewUrl(fileUrl);
+        setResolvedFileName(fileName);
+        setResolvedFileType(fileType || "");
         setLoading(false);
         return;
       }
@@ -120,12 +163,16 @@ export default function DocumentViewer({
           const data = await res.json();
           const resolvedPythonId = pythonFileId || data.python_file_id;
           if (resolvedPythonId) {
-            const blobUrl = await getPythonBlobUrl(resolvedPythonId);
-            setViewUrl(blobUrl);
+            const blobData = await getPythonBlobData(resolvedPythonId);
+            setViewUrl(blobData.blobUrl);
+            setResolvedFileName(blobData.filename || data.title || fileName);
+            setResolvedFileType(blobData.contentType || data.file_type || fileType || "");
             return;
           }
           const url = data.file_url;
           if (!url) throw new Error("No file URL returned from server");
+          setResolvedFileName(data.title || fileName);
+          setResolvedFileType(data.file_type || fileType || "");
           setViewUrl(url.startsWith("http") ? url : `${BASE_URL}${url}`);
         }
       }
@@ -154,7 +201,8 @@ export default function DocumentViewer({
           const data = await res.json();
           const resolvedPythonId = pythonFileId || data.python_file_id;
           if (resolvedPythonId) {
-            downloadUrl = await getPythonBlobUrl(resolvedPythonId);
+            const blobData = await getPythonBlobData(resolvedPythonId);
+            downloadUrl = blobData.blobUrl;
           } else {
             const raw = data.file_url;
             downloadUrl = raw.startsWith("http") ? raw : `${BASE_URL}${raw}`;
@@ -162,7 +210,7 @@ export default function DocumentViewer({
         }
         const a = document.createElement("a");
         a.href = downloadUrl;
-        a.download = fileName;
+        a.download = resolvedFileName || fileName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -173,10 +221,36 @@ export default function DocumentViewer({
     }
   };
 
+  const mimeTypeToExtension: Record<string, string> = {
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "text/csv": "csv",
+    "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "text/plain": "txt",
+    "application/json": "json",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "audio/mpeg": "mp3",
+    "audio/wav": "wav",
+    "video/mp4": "mp4",
+  };
+
   const getFileExtension = (): string => {
-    if (fileType) return fileType.toLowerCase();
-    if (fileName && fileName.includes(".")) {
-      const ext = fileName.split(".").pop()?.toLowerCase();
+    const effectiveType = (resolvedFileType || fileType || "").toLowerCase().trim();
+    if (effectiveType) {
+      if (mimeTypeToExtension[effectiveType]) return mimeTypeToExtension[effectiveType];
+      if (!effectiveType.includes("/")) return effectiveType;
+    }
+
+    const effectiveFileName = resolvedFileName || fileName;
+    if (effectiveFileName && effectiveFileName.includes(".")) {
+      const ext = effectiveFileName.split(".").pop()?.toLowerCase();
       if (ext) return ext;
     }
     if (viewUrl) {
@@ -196,9 +270,10 @@ export default function DocumentViewer({
 
   const renderPreview = () => {
     const ext = getFileExtension();
+    const effectiveType = (resolvedFileType || fileType || "").toLowerCase();
 
     // PDF
-    if (ext === "pdf" || fileType?.includes("pdf")) {
+    if (ext === "pdf" || effectiveType.includes("pdf")) {
       return (
         <iframe
           src={`${viewUrl}#view=FitH`}
@@ -210,7 +285,7 @@ export default function DocumentViewer({
     }
 
     // Images
-    if (["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"].includes(ext) || fileType?.includes("image")) {
+    if (["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"].includes(ext) || effectiveType.includes("image")) {
       return (
         <div className="flex items-center justify-center h-full bg-gray-50 overflow-auto">
           <img
@@ -224,7 +299,7 @@ export default function DocumentViewer({
     }
 
     // Video
-    if (["mp4", "webm", "ogg", "mov", "mkv", "avi"].includes(ext) || fileType?.includes("video")) {
+    if (["mp4", "webm", "ogg", "mov", "mkv", "avi"].includes(ext) || effectiveType.includes("video")) {
       return (
         <div className="flex items-center justify-center h-full bg-black">
           <video src={viewUrl} controls className="max-w-full max-h-full">
@@ -235,7 +310,7 @@ export default function DocumentViewer({
     }
 
     // Audio
-    if (["mp3", "wav", "ogg", "m4a", "aac", "flac"].includes(ext) || fileType?.includes("audio")) {
+    if (["mp3", "wav", "ogg", "m4a", "aac", "flac"].includes(ext) || effectiveType.includes("audio")) {
       return (
         <div className="flex flex-col items-center justify-center h-full bg-gray-50 gap-4">
           <div className="w-24 h-24 rounded-full bg-blue-100 flex items-center justify-center">
@@ -243,7 +318,7 @@ export default function DocumentViewer({
               <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z" />
             </svg>
           </div>
-          <p className="text-gray-700 font-medium">{fileName}</p>
+          <p className="text-gray-700 font-medium">{resolvedFileName || fileName}</p>
           <audio src={viewUrl} controls className="w-80">
             Your browser does not support audio playback.
           </audio>
@@ -257,7 +332,7 @@ export default function DocumentViewer({
     }
 
     // Word Documents — mammoth converts to HTML in browser
-    if (["doc", "docx"].includes(ext) || fileType?.includes("word") || fileType?.includes("msword")) {
+    if (["doc", "docx"].includes(ext) || effectiveType.includes("word") || effectiveType.includes("msword")) {
       if (officeLoading) return renderOfficeLoading("border-blue-600", "Converting Word document...");
       if (docHtml) {
         return (
@@ -270,7 +345,7 @@ export default function DocumentViewer({
     }
 
     // Excel / CSV — SheetJS converts to HTML table in browser
-    if (["xls", "xlsx", "csv"].includes(ext) || fileType?.includes("excel") || fileType?.includes("spreadsheet")) {
+    if (["xls", "xlsx", "csv"].includes(ext) || effectiveType.includes("excel") || effectiveType.includes("spreadsheet")) {
       if (officeLoading) return renderOfficeLoading("border-green-600", "Loading spreadsheet...");
       if (sheetHtml) {
         return (
@@ -284,7 +359,7 @@ export default function DocumentViewer({
     }
 
     // PPT — no browser-side renderer, use Google Docs for public URLs
-    if (["ppt", "pptx"].includes(ext) || fileType?.includes("presentation")) {
+    if (["ppt", "pptx"].includes(ext) || effectiveType.includes("presentation")) {
       const isPublicUrl = viewUrl.startsWith("http") && !viewUrl.includes("localhost");
       if (isPublicUrl) {
         return (
@@ -318,7 +393,7 @@ export default function DocumentViewer({
     return (
       <div className="flex flex-col items-center justify-center h-full bg-gray-50 p-8">
         <File className="w-20 h-20 text-gray-400 mb-4" />
-        <p className="text-gray-700 font-semibold mb-2">{fileName}</p>
+        <p className="text-gray-700 font-semibold mb-2">{resolvedFileName || fileName}</p>
         <p className="text-gray-600 mb-4 text-center">Preview not available for this file type</p>
         <button
           onClick={handleDownload}

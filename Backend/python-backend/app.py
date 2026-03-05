@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -15,6 +16,7 @@ from pymongo.uri_parser import parse_uri
 from dotenv import load_dotenv
 
 from config.routing_rules import ROUTING_RULES
+from priority_service.services.scoring import compute_priority
 from summarizer import extract_text_from_file, generate_integrated_summary, generate_summary
 from utils.email_sender import send_document_email_bytes
 
@@ -80,6 +82,72 @@ def classify_text(extracted_text: str):
         return pred, 1.0
     except Exception:
         return "Error", 0.0
+
+
+def _extract_sender_category(text: str) -> str:
+    lowered = (text or "").lower()
+    sender_rules = [
+        ("court", ["hon'ble court", "district court", "high court", "supreme court", "tribunal"]),
+        ("regulator", ["sebi", "rbi", "compliance authority", "regulatory authority", "regulator"]),
+        ("government", ["government of", "ministry", "department of", "govt"]),
+        ("police", ["police station", "fir", "crime branch", "investigation unit"]),
+        ("internal", ["internal memo", "intra-office", "internal communication"]),
+        ("vendor", ["vendor", "supplier"]),
+        ("customer", ["customer", "client"]),
+    ]
+    for category, markers in sender_rules:
+        if any(marker in lowered for marker in markers):
+            return category
+    return "unknown"
+
+
+def _extract_selected_deadline(text: str) -> str | None:
+    lowered = (text or "").lower()
+    patterns = [
+        r"(?:due by|deadline[:\s]*|respond by|submit by)\s*(\d{4}-\d{2}-\d{2})",
+        r"(?:due by|deadline[:\s]*|respond by|submit by)\s*(\d{2}/\d{2}/\d{4})",
+        r"(?:on or before)\s*(\d{4}-\d{2}-\d{2})",
+        r"(?:on or before)\s*(\d{2}/\d{2}/\d{4})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            value = match.group(1)
+            if "/" in value:
+                dd, mm, yyyy = value.split("/")
+                return f"{yyyy}-{mm}-{dd}"
+            return value
+    return None
+
+
+def _extract_urgency_indicators(text: str) -> List[str]:
+    lowered = (text or "").lower()
+    markers = [
+        "urgent",
+        "immediate",
+        "asap",
+        "within 24 hours",
+        "today",
+        "overdue",
+        "final reminder",
+        "show cause",
+        "legal notice",
+    ]
+    return [m for m in markers if m in lowered]
+
+
+def extract_priority_metadata(extracted_text: str, predicted_label: str) -> dict:
+    return {
+        "sender": {
+            "name": None,
+            "category": _extract_sender_category(extracted_text),
+        },
+        "document_type": (predicted_label or "").strip().lower().replace(" ", "_"),
+        "selected_deadline": _extract_selected_deadline(extracted_text),
+        "urgency_indicators": _extract_urgency_indicators(extracted_text),
+        "extraction_model_version": "rule-v1",
+        "extraction_confidence": 0.6,
+    }
 
 
 def _resolve_department(predicted_label: str, probability: float):
@@ -289,6 +357,8 @@ async def classify_and_summarize(file: UploadFile = File(...)):
         summary = generate_summary(text)
         department, note = _resolve_department(predicted_label, probability)
         route_to = department if department else "manual_review"
+        extracted_metadata = extract_priority_metadata(text, predicted_label)
+        priority_result = compute_priority(extracted_metadata)
 
         return {
             "status": "processed",
@@ -298,6 +368,11 @@ async def classify_and_summarize(file: UploadFile = File(...)):
                 "confidence": probability,
             },
             "summary": summary,
+            "extraction": extracted_metadata,
+            "priority": {
+                **priority_result,
+                "engine_version": "rule-v1",
+            },
             "actions": {
                 "email": {
                     "route_to": route_to,
@@ -333,6 +408,8 @@ async def ingest_and_route(file: UploadFile = File(...)):
 
         predicted_label, probability = classify_text(text)
         summary = generate_summary(text)
+        extracted_metadata = extract_priority_metadata(text, predicted_label)
+        priority_result = compute_priority(extracted_metadata)
 
         content_type = file.content_type or "application/octet-stream"
         email_info = route_and_send_email(
@@ -360,6 +437,11 @@ async def ingest_and_route(file: UploadFile = File(...)):
                 "confidence": probability,
             },
             "summary": summary,
+            "extraction": extracted_metadata,
+            "priority": {
+                **priority_result,
+                "engine_version": "rule-v1",
+            },
             "actions": {
                 "email": email_info,
                 "storage": storage_info,

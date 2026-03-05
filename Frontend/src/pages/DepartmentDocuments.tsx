@@ -14,6 +14,10 @@ interface DocumentItem {
   title: string;
   summary?: string;
   urgency?: "high" | "medium" | "low";
+  priority?: {
+    priority_score?: number;
+    priority_level?: "Low" | "Medium" | "High" | "Critical";
+  } | null;
   createdAt?: string;
   department_id?: string | { _id?: string; name?: string; color?: string };
   routed_department?: string;
@@ -119,12 +123,13 @@ export default function DepartmentDocuments() {
     return value.charAt(0).toUpperCase() + value.slice(1);
   };
 
-  const getUrgencyColor = (u?: string) =>
+  const getPriorityColor = (level?: string) =>
     ({
-      high: "bg-red-100 text-red-800 border-red-200",
-      medium: "bg-yellow-100 text-yellow-800 border-yellow-200",
-      low: "bg-green-100 text-green-800 border-green-200",
-    }[u || ""] || "");
+      Critical: "bg-rose-100 text-rose-800 border-rose-200",
+      High: "bg-orange-100 text-orange-800 border-orange-200",
+      Medium: "bg-amber-100 text-amber-800 border-amber-200",
+      Low: "bg-emerald-100 text-emerald-800 border-emerald-200",
+    }[level || ""] || "bg-slate-100 text-slate-700 border-slate-200");
 
   const handleDeleteDocument = async (docId: string) => {
     const confirmed = window.confirm("Delete this document permanently?");
@@ -253,8 +258,8 @@ export default function DepartmentDocuments() {
                           {doc.title}
                         </h3>
                         <div className="flex items-center gap-2">
-                          <span className={`px-3 py-1 rounded-full text-xs border ${getUrgencyColor(doc.urgency)}`}>
-                            {(doc.urgency || "medium")}
+                          <span className={`px-3 py-1 rounded-full text-xs border ${getPriorityColor(doc.priority?.priority_level)}`}>
+                            {doc.priority?.priority_level || "Unscored"}
                           </span>
                           <button
                             onClick={(e) => {
