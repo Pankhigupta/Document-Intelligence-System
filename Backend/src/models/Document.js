@@ -9,6 +9,7 @@ const DocumentSchema = new mongoose.Schema({
   uploaded_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   file_url: String,
   file_type: String,
+  storage_file_id: String,
   python_file_id: String,
   metadata: Object
 }, { timestamps: true });

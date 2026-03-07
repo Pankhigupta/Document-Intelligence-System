@@ -1,16 +1,21 @@
-import { io } from '../server.js';
-import Notification from '../models/Notification.js';
-import Document from '../models/Document.js';
-import DocumentPermission from '../models/DocumentPermission.js';
-import DocumentVersion from '../models/DocumentVersion.js';
-import DocumentExtraction from '../models/DocumentExtraction.js';
-import DocumentPriority from '../models/DocumentPriority.js';
-import User from '../models/User.js';
-import { uploadProvider, uploadToS3 } from '../utils/upload.js';
+import { Readable } from "stream";
+import mongoose from "mongoose";
+import { io } from "../server.js";
+import Notification from "../models/Notification.js";
+import Document from "../models/Document.js";
+import DocumentPermission from "../models/DocumentPermission.js";
+import DocumentVersion from "../models/DocumentVersion.js";
+import DocumentExtraction from "../models/DocumentExtraction.js";
+import DocumentPriority from "../models/DocumentPriority.js";
+import User from "../models/User.js";
+import { uploadProvider, uploadToS3 } from "../utils/upload.js";
 import { sendNotification } from "../utils/sendNotification.js";
+import { getGFS } from "../utils/gridfs.js";
 
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 dotenv.config();
+
+const DOCUMENT_BUCKET_NAME = "documentUploads";
 
 const formatDocumentForClient = (doc) => {
   const plain = doc?.toObject ? doc.toObject() : doc;
@@ -28,30 +33,83 @@ const mapPriorityLevelToUrgency = (priorityLevel) => {
   return "medium";
 };
 
+const buildDocumentDownloadUrl = (documentId) => `/api/documents/${documentId}/download`;
+
+const uploadBufferToGridFS = async ({ buffer, filename, contentType, metadata }) => {
+  const gfs = await getGFS(DOCUMENT_BUCKET_NAME);
+  const uploadStream = gfs.openUploadStream(filename, {
+    contentType,
+    metadata,
+  });
+
+  await new Promise((resolve, reject) => {
+    Readable.from(buffer).pipe(uploadStream).on("finish", resolve).on("error", reject);
+  });
+
+  return uploadStream.id;
+};
+
+const storeIncomingFile = async ({ documentId, userId, file }) => {
+  if (uploadProvider === "s3") {
+    const key = `${Date.now()}_${file.originalname}`;
+    const s3resp = await uploadToS3(file.buffer, key, file.mimetype);
+    return {
+      fileUrl: s3resp.Location || `${process.env.S3_BASE_URL}/${key}`,
+      fileType: file.mimetype,
+      storageFileId: null,
+    };
+  }
+
+  const uniqueName = `${Date.now()}_${file.originalname}`;
+  const fileId = await uploadBufferToGridFS({
+    buffer: file.buffer,
+    filename: uniqueName,
+    contentType: file.mimetype,
+    metadata: {
+      documentId: String(documentId),
+      uploadedBy: String(userId),
+      originalName: file.originalname,
+    },
+  });
+
+  return {
+    fileUrl: buildDocumentDownloadUrl(documentId),
+    fileType: file.mimetype,
+    storageFileId: String(fileId),
+  };
+};
+
+const deleteStoredFileIfAny = async (storageFileId) => {
+  if (!storageFileId || !mongoose.Types.ObjectId.isValid(storageFileId)) return;
+  const gfs = await getGFS(DOCUMENT_BUCKET_NAME);
+  await gfs.delete(new mongoose.Types.ObjectId(storageFileId));
+};
+
 export const createDocument = async (req, res) => {
   try {
     const user = await User.findById(req.userId).select("department_id");
     if (!user) return res.status(401).json({ message: "User not found" });
 
-    const payload = req.body;
+    const payload = { ...req.body };
     payload.uploaded_by = req.userId;
-    // Default to uploader's department when department_id is not provided.
     if (!payload.department_id && user.department_id) {
       payload.department_id = user.department_id;
     }
 
-    if (req.file) {
-      if (uploadProvider === 's3') {
-        const key = `${Date.now()}_${req.file.originalname}`;
-        const s3resp = await uploadToS3(req.file.buffer, key, req.file.mimetype);
-        payload.file_url = s3resp.Location || `${process.env.S3_BASE_URL}/${key}`;
-      } else {
-        payload.file_url = `/uploads/${req.file.filename}`;
-      }
-      payload.file_type = req.file.mimetype;
-    }
-
     const doc = await Document.create(payload);
+
+    if (req.file) {
+      const filePayload = await storeIncomingFile({
+        documentId: doc._id,
+        userId: req.userId,
+        file: req.file,
+      });
+      await Document.findByIdAndUpdate(doc._id, {
+        file_url: filePayload.fileUrl,
+        file_type: filePayload.fileType,
+        storage_file_id: filePayload.storageFileId,
+      });
+    }
 
     await DocumentPermission.create({
       document_id: doc._id,
@@ -68,30 +126,27 @@ export const createDocument = async (req, res) => {
       change_summary: "Initial version",
     });
 
-    // 🔔 Send Notification
     await sendNotification(
       req.userId,
       `Your document "${doc.title}" has been uploaded.`,
       "success"
     );
 
-    const hydrated = await Document.findById(doc._id).populate('department_id', 'name color');
+    const hydrated = await Document.findById(doc._id).populate("department_id", "name color");
     res.json(formatDocumentForClient(hydrated));
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-
 export const getDocument = async (req, res) => {
   try {
     const { id } = req.params;
     const doc = await Document.findById(id)
-      .populate('uploaded_by', 'email full_name')
-      .populate('department_id', 'name color');
-    if (!doc) return res.status(404).json({ message: 'Document not found' });
+      .populate("uploaded_by", "email full_name")
+      .populate("department_id", "name color");
+    if (!doc) return res.status(404).json({ message: "Document not found" });
 
     const priority = await DocumentPriority.findOne({ document_id: doc._id }).lean();
     res.json({
@@ -100,14 +155,14 @@ export const getDocument = async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
 export const listDocuments = async (req, res) => {
   try {
     const docs = await Document.find({})
-      .populate('department_id', 'name color')
+      .populate("department_id", "name color")
       .sort({ createdAt: -1 });
 
     const docIds = docs.map((d) => d._id);
@@ -129,7 +184,47 @@ export const listDocuments = async (req, res) => {
     );
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const downloadDocumentFile = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await Document.findById(id).lean();
+    if (!doc) return res.status(404).json({ message: "Document not found" });
+
+    if (!doc.storage_file_id) {
+      if (doc.file_url) {
+        return res.redirect(doc.file_url);
+      }
+      return res.status(404).json({ message: "No DB file available for this document" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(doc.storage_file_id)) {
+      return res.status(400).json({ message: "Invalid storage file id" });
+    }
+
+    const fileObjectId = new mongoose.Types.ObjectId(doc.storage_file_id);
+    const file = await mongoose.connection.db
+      .collection(`${DOCUMENT_BUCKET_NAME}.files`)
+      .findOne({ _id: fileObjectId });
+
+    if (!file) {
+      return res.status(404).json({ message: "Stored file not found" });
+    }
+
+    res.set("Content-Type", file.contentType || doc.file_type || "application/octet-stream");
+    res.set(
+      "Content-Disposition",
+      `inline; filename="${file.filename || doc.title || "document"}"`
+    );
+
+    const gfs = await getGFS(DOCUMENT_BUCKET_NAME);
+    gfs.openDownloadStream(fileObjectId).pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -149,19 +244,20 @@ export const updateDocument = async (req, res) => {
     }
 
     if (req.file) {
-      if (uploadProvider === "s3") {
-        const key = `${Date.now()}_${req.file.originalname}`;
-        const s3resp = await uploadToS3(
-          req.file.buffer,
-          key,
-          req.file.mimetype
-        );
-        req.body.file_url =
-          s3resp.Location || `${process.env.S3_BASE_URL}/${key}`;
-      } else {
-        req.body.file_url = `/uploads/${req.file.filename}`;
+      const previousStorageFileId = doc.storage_file_id;
+      const filePayload = await storeIncomingFile({
+        documentId: doc._id,
+        userId: req.userId,
+        file: req.file,
+      });
+
+      req.body.file_url = filePayload.fileUrl;
+      req.body.file_type = filePayload.fileType;
+      req.body.storage_file_id = filePayload.storageFileId;
+
+      if (previousStorageFileId && previousStorageFileId !== filePayload.storageFileId) {
+        await deleteStoredFileIfAny(previousStorageFileId);
       }
-      req.body.file_type = req.file.mimetype;
     }
 
     const extractionPayload = req.body.extraction;
@@ -244,7 +340,6 @@ export const updateDocument = async (req, res) => {
       });
     }
 
-    // 🔔 Send Notification
     await sendNotification(
       doc.uploaded_by,
       `Your document "${doc.title}" was updated.`,
@@ -262,23 +357,25 @@ export const updateDocument = async (req, res) => {
   }
 };
 
-
 export const deleteDocument = async (req, res) => {
   try {
     const { id } = req.params;
     const doc = await Document.findById(id);
-    if (!doc) return res.status(404).json({ message: 'Not found' });
-    if (doc.uploaded_by.toString() !== req.userId) return res.status(403).json({ message: 'Not allowed' });
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    if (doc.uploaded_by.toString() !== req.userId) return res.status(403).json({ message: "Not allowed" });
+
+    if (doc.storage_file_id) {
+      await deleteStoredFileIfAny(doc.storage_file_id);
+    }
 
     await Document.deleteOne({ _id: id });
     await DocumentPermission.deleteMany({ document_id: id });
-    res.json({ message: 'Deleted' });
+    res.json({ message: "Deleted" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: "Server error" });
   }
 };
-
 
 export const uploadDocument = async (req, res) => {
   try {
@@ -286,22 +383,37 @@ export const uploadDocument = async (req, res) => {
       title: req.body.title,
       content: req.body.content || "",
       uploaded_by: req.userId,
-      file_url: req.file ? `/uploads/${req.file.filename}` : null,
+      file_url: null,
       file_type: req.file?.mimetype || null,
+      storage_file_id: null,
     };
 
     const doc = await Document.create(payload);
 
+    if (req.file) {
+      const filePayload = await storeIncomingFile({
+        documentId: doc._id,
+        userId: req.userId,
+        file: req.file,
+      });
+
+      await Document.findByIdAndUpdate(doc._id, {
+        file_url: filePayload.fileUrl,
+        file_type: filePayload.fileType,
+        storage_file_id: filePayload.storageFileId,
+      });
+    }
+
     const notification = await Notification.create({
       userId: req.userId,
       documentId: doc._id,
-      message: "New document uploaded"
+      message: "New document uploaded",
     });
 
     io.emit("new-notification", notification);
 
-    res.json(doc);
-
+    const hydrated = await Document.findById(doc._id);
+    res.json(hydrated);
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Upload failed" });

@@ -156,6 +156,12 @@ export default function DocumentViewer({
           const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
           if (!res.ok) throw new Error("Failed to load document");
           const blob = await res.blob();
+          const contentType = res.headers.get("content-type") || blob.type || fileType || "";
+          const resolvedName =
+            getFilenameFromContentDisposition(res.headers.get("content-disposition")) ||
+            fileName;
+          setResolvedFileName(resolvedName);
+          setResolvedFileType(contentType);
           setViewUrl(URL.createObjectURL(blob));
         } else {
           const res = await authFetch(`${API_URL}/documents/${fileId}`);
@@ -169,11 +175,17 @@ export default function DocumentViewer({
             setResolvedFileType(blobData.contentType || data.file_type || fileType || "");
             return;
           }
-          const url = data.file_url;
-          if (!url) throw new Error("No file URL returned from server");
-          setResolvedFileName(data.title || fileName);
-          setResolvedFileType(data.file_type || fileType || "");
-          setViewUrl(url.startsWith("http") ? url : `${BASE_URL}${url}`);
+          const fileRes = await authFetch(`${API_URL}/documents/${fileId}/download`);
+          if (!fileRes.ok) throw new Error("Failed to fetch document bytes");
+          const blob = await fileRes.blob();
+          const contentType = fileRes.headers.get("content-type") || blob.type || data.file_type || fileType || "";
+          const resolvedName =
+            getFilenameFromContentDisposition(fileRes.headers.get("content-disposition")) ||
+            data.title ||
+            fileName;
+          setResolvedFileName(resolvedName);
+          setResolvedFileType(contentType);
+          setViewUrl(URL.createObjectURL(blob));
         }
       }
     } catch (err) {
@@ -192,25 +204,38 @@ export default function DocumentViewer({
       }
       if (fileId) {
         let downloadUrl = "";
+        let downloadName = resolvedFileName || fileName;
         if (isGmailAttachment) {
           const res = await authFetch(`${API_URL}/mail/download/${fileId}`);
+          if (!res.ok) throw new Error("Failed to download file");
           const blob = await res.blob();
           downloadUrl = URL.createObjectURL(blob);
+          downloadName =
+            getFilenameFromContentDisposition(res.headers.get("content-disposition")) ||
+            downloadName;
         } else {
           const res = await authFetch(`${API_URL}/documents/${fileId}`);
+          if (!res.ok) throw new Error("Failed to load document metadata");
           const data = await res.json();
           const resolvedPythonId = pythonFileId || data.python_file_id;
           if (resolvedPythonId) {
             const blobData = await getPythonBlobData(resolvedPythonId);
             downloadUrl = blobData.blobUrl;
+            downloadName = blobData.filename || downloadName;
           } else {
-            const raw = data.file_url;
-            downloadUrl = raw.startsWith("http") ? raw : `${BASE_URL}${raw}`;
+            const fileRes = await authFetch(`${API_URL}/documents/${fileId}/download`);
+            if (!fileRes.ok) throw new Error("Failed to download file");
+            const blob = await fileRes.blob();
+            downloadUrl = URL.createObjectURL(blob);
+            downloadName =
+              getFilenameFromContentDisposition(fileRes.headers.get("content-disposition")) ||
+              data.title ||
+              downloadName;
           }
         }
         const a = document.createElement("a");
         a.href = downloadUrl;
-        a.download = resolvedFileName || fileName;
+        a.download = downloadName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

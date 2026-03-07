@@ -38,7 +38,8 @@ CONFIDENCE_THRESHOLD = 0.50
 
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "test").strip()
-DOC_BUCKET_NAME = os.getenv("PYTHON_DOC_BUCKET_NAME", "pythonDocuments").strip()
+DOC_BUCKET_NAME = os.getenv(
+    "PYTHON_DOC_BUCKET_NAME", "pythonDocuments").strip()
 DOC_FILES_COLLECTION = f"{DOC_BUCKET_NAME}.files"
 
 mongo_client: Optional[MongoClient] = None
@@ -60,11 +61,13 @@ class SummaryItem(BaseModel):
 class IntegratedSummaryRequest(BaseModel):
     documents: List[SummaryItem]
 
+
 try:
     clf = joblib.load(MODEL_PATH)
     print(f"Classifier loaded from {MODEL_PATH}")
 except Exception as e:
-    print(f"Warning: classifier not loaded. Routing falls back to manual review. Error: {e}")
+    print(
+        f"Warning: classifier not loaded. Routing falls back to manual review. Error: {e}")
     clf = None
 
 
@@ -87,13 +90,19 @@ def classify_text(extracted_text: str):
 def _extract_sender_category(text: str) -> str:
     lowered = (text or "").lower()
     sender_rules = [
-        ("court", ["hon'ble court", "district court", "high court", "supreme court", "tribunal"]),
-        ("regulator", ["sebi", "rbi", "compliance authority", "regulatory authority", "regulator"]),
+        ("court", ["hon'ble court", "district court",
+         "high court", "supreme court", "tribunal"]),
+        ("regulator", ["sebi", "rbi", "compliance authority",
+         "regulatory authority", "regulator"]),
         ("government", ["government of", "ministry", "department of", "govt"]),
-        ("police", ["police station", "fir", "crime branch", "investigation unit"]),
-        ("internal", ["internal memo", "intra-office", "internal communication"]),
+        ("police", ["police station", "fir",
+         "crime branch", "investigation unit"]),
+        ("internal", ["internal memo",
+         "intra-office", "internal communication"]),
         ("vendor", ["vendor", "supplier"]),
         ("customer", ["customer", "client"]),
+        ("seniors", ["senior", "manager", "administration"]),
+        ("employees", ["Analyst", "Associate"])
     ]
     for category, markers in sender_rules:
         if any(marker in lowered for marker in markers):
@@ -176,7 +185,8 @@ def _ensure_db():
     db_name = parsed.get("database") or MONGO_DB_NAME
     mongo_db = mongo_client[db_name]
     doc_bucket = GridFSBucket(mongo_db, bucket_name=DOC_BUCKET_NAME)
-    mongo_db[DOC_FILES_COLLECTION].create_index([("metadata.route_to", 1), ("uploadDate", DESCENDING)])
+    mongo_db[DOC_FILES_COLLECTION].create_index(
+        [("metadata.route_to", 1), ("uploadDate", DESCENDING)])
 
 
 def _get_department_emails_from_db(department_name: str) -> List[str]:
@@ -276,7 +286,8 @@ def route_and_store(
         "stored_at": datetime.now(timezone.utc),
     }
 
-    file_id = doc_bucket.upload_from_stream(filename, file_bytes, metadata=metadata)
+    file_id = doc_bucket.upload_from_stream(
+        filename, file_bytes, metadata=metadata)
     return {
         "route_to": route_to,
         "stored_id": str(file_id),
@@ -316,7 +327,8 @@ async def summarize_batch(files: List[UploadFile] = File(...)):
             raw_bytes = await file.read()
             text = extract_text_from_file(raw_bytes, file.filename)
             if text and not text.startswith("Error"):
-                processed_results.append({"title": file.filename, "summary": generate_summary(text)})
+                processed_results.append(
+                    {"title": file.filename, "summary": generate_summary(text)})
         except Exception:
             continue
 
@@ -329,14 +341,16 @@ async def summarize_batch(files: List[UploadFile] = File(...)):
             "individual_summaries": processed_results,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Integration error: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Integration error: {str(e)}")
 
 
 @app.post("/summarize-integrated")
 def summarize_integrated(payload: IntegratedSummaryRequest):
     """Create one combined summary from pre-summarized documents."""
     items = [
-        {"title": (d.title or "").strip(), "summary": (d.summary or "").strip()}
+        {"title": (d.title or "").strip(),
+         "summary": (d.summary or "").strip()}
         for d in payload.documents
         if (d.title or "").strip() and (d.summary or "").strip()
     ]
@@ -459,9 +473,11 @@ def list_documents(route_to: Optional[str] = None, limit: int = 50):
         safe_limit = max(1, min(limit, 200))
         query = {}
         if route_to:
-            query["metadata.route_to"] = {"$regex": f"^{route_to.strip()}$", "$options": "i"}
+            query["metadata.route_to"] = {
+                "$regex": f"^{route_to.strip()}$", "$options": "i"}
 
-        docs = list(mongo_db[DOC_FILES_COLLECTION].find(query).sort("uploadDate", DESCENDING).limit(safe_limit))
+        docs = list(mongo_db[DOC_FILES_COLLECTION].find(
+            query).sort("uploadDate", DESCENDING).limit(safe_limit))
         return {
             "count": len(docs),
             "items": [
@@ -527,7 +543,8 @@ def update_document_route(document_id: str, payload: RouteUpdateRequest):
         if payload.decided_by:
             update_ops["metadata.manual_review.decided_by"] = payload.decided_by
 
-        mongo_db[DOC_FILES_COLLECTION].update_one({"_id": oid}, {"$set": update_ops})
+        mongo_db[DOC_FILES_COLLECTION].update_one(
+            {"_id": oid}, {"$set": update_ops})
 
         updated = mongo_db[DOC_FILES_COLLECTION].find_one({"_id": oid})
         return {
@@ -553,7 +570,8 @@ def download_document(document_id: str):
             return JSONResponse({"message": "Document not found"}, status_code=404)
 
         grid_out = doc_bucket.open_download_stream(oid)
-        content_type = d.get("metadata", {}).get("content_type", "application/octet-stream")
+        content_type = d.get("metadata", {}).get(
+            "content_type", "application/octet-stream")
         filename = d.get("filename", f"{document_id}.bin")
 
         return StreamingResponse(
