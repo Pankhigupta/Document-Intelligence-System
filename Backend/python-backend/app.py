@@ -47,11 +47,18 @@ DATASET_PATH = os.path.join(BASE_DIR, "dataset_pipeline", "output", "dataset.csv
 FEEDBACK_DATASET_PATH = os.path.join(
     BASE_DIR, "dataset_pipeline", "output", "manual_review_feedback.csv"
 )
+NEGATIVE_FEEDBACK_DATASET_PATH = os.path.join(
+    BASE_DIR, "dataset_pipeline", "output", "manual_review_negative_feedback.csv"
+)
 CONFIDENCE_THRESHOLD = 0.60
 AUTO_ROUTE_DEPT_THRESHOLD = 0.40
 RELEVANT_DEPT_THRESHOLD = 0.15
+MANUAL_REVIEW_MIN_SCORE = 0.20
 TOP_DEPARTMENT_CANDIDATES = 2
 FEEDBACK_SIMILARITY_THRESHOLD = float(os.getenv("FEEDBACK_SIMILARITY_THRESHOLD", "0.82"))
+NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(
+    os.getenv("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", "0.80")
+)
 SBERT_MODEL_NAME = os.getenv("SBERT_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
 
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
@@ -66,6 +73,8 @@ doc_bucket: Optional[GridFSBucket] = None
 feedback_lock = threading.Lock()
 feedback_rows: List[Dict[str, str]] = []
 feedback_embeddings: Optional[np.ndarray] = None
+negative_feedback_rows: List[Dict[str, str]] = []
+negative_feedback_embeddings: Optional[np.ndarray] = None
 
 
 class RouteUpdateRequest(BaseModel):
@@ -77,6 +86,12 @@ class RouteUpdateRequest(BaseModel):
 
 class RetrainRequest(BaseModel):
     min_feedback: int = 50
+
+
+class NegativeFeedbackRequest(BaseModel):
+    text: str
+    wrong_label: str
+    source_doc_id: Optional[str] = None
 
 
 class SummaryItem(BaseModel):
@@ -211,6 +226,20 @@ def _ensure_feedback_csv():
         writer.writeheader()
 
 
+def _ensure_negative_feedback_csv():
+    os.makedirs(os.path.dirname(NEGATIVE_FEEDBACK_DATASET_PATH), exist_ok=True)
+    if os.path.exists(NEGATIVE_FEEDBACK_DATASET_PATH) and os.path.getsize(
+        NEGATIVE_FEEDBACK_DATASET_PATH
+    ) > 0:
+        return
+    with open(NEGATIVE_FEEDBACK_DATASET_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["text", "wrong_label", "source_doc_id", "created_at"],
+        )
+        writer.writeheader()
+
+
 def _load_feedback_memory():
     global feedback_rows, feedback_embeddings
     _ensure_feedback_csv()
@@ -246,6 +275,41 @@ def _load_feedback_memory():
     with feedback_lock:
         feedback_rows = rows
         feedback_embeddings = embeddings
+
+
+def _load_negative_feedback_memory():
+    global negative_feedback_rows, negative_feedback_embeddings
+    _ensure_negative_feedback_csv()
+    rows: List[Dict[str, str]] = []
+
+    with open(NEGATIVE_FEEDBACK_DATASET_PATH, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            text = (row.get("text") or "").strip()
+            wrong_label = _normalize_label(row.get("wrong_label") or "")
+            if not text or not wrong_label:
+                continue
+            rows.append(
+                {
+                    "text": text,
+                    "wrong_label": wrong_label,
+                    "source_doc_id": (row.get("source_doc_id") or "").strip(),
+                    "created_at": (row.get("created_at") or "").strip(),
+                }
+            )
+
+    embeddings = None
+    if rows and _is_st_classifier_ready():
+        texts = [r["text"] for r in rows]
+        embeddings = clf.encode(texts, batch_size=64)
+        if embeddings.size > 0:
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            embeddings = embeddings / norms
+
+    with feedback_lock:
+        negative_feedback_rows = rows
+        negative_feedback_embeddings = embeddings
 
 
 def _append_feedback_sample(
@@ -299,6 +363,55 @@ def _append_feedback_sample(
     return True
 
 
+def _append_negative_feedback_sample(text: str, wrong_label: str, source_doc_id: str = "") -> bool:
+    global negative_feedback_embeddings
+    cleaned_text = (text or "").strip()
+    normalized_label = _normalize_label(wrong_label)
+    if not cleaned_text or len(cleaned_text) < 20 or not normalized_label:
+        return False
+
+    _ensure_negative_feedback_csv()
+    with open(NEGATIVE_FEEDBACK_DATASET_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["text", "wrong_label", "source_doc_id", "created_at"],
+        )
+        writer.writerow(
+            {
+                "text": cleaned_text,
+                "wrong_label": normalized_label,
+                "source_doc_id": source_doc_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    if _is_st_classifier_ready():
+        emb = clf.encode([cleaned_text], batch_size=1)
+        if emb.size > 0:
+            norm = np.linalg.norm(emb, axis=1, keepdims=True)
+            norm[norm == 0] = 1.0
+            emb = emb / norm
+            with feedback_lock:
+                negative_feedback_rows.append(
+                    {
+                        "text": cleaned_text,
+                        "wrong_label": normalized_label,
+                        "source_doc_id": source_doc_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                if negative_feedback_embeddings is None:
+                    negative_feedback_embeddings = emb
+                else:
+                    negative_feedback_embeddings = np.vstack(
+                        [negative_feedback_embeddings, emb]
+                    )
+            return True
+
+    _load_negative_feedback_memory()
+    return True
+
+
 def _predict_from_feedback_memory(classification_input: str):
     if not _is_st_classifier_ready():
         return None
@@ -326,6 +439,56 @@ def _predict_from_feedback_memory(classification_input: str):
         return None
 
     return local_rows[best_idx]["label"], best_sim
+
+
+def _apply_negative_feedback_penalty(
+    classification_input: str, label_probs: Dict[str, float]
+) -> Dict[str, float]:
+    if not _is_st_classifier_ready():
+        return label_probs
+    if not label_probs:
+        return label_probs
+
+    with feedback_lock:
+        if (
+            not negative_feedback_rows
+            or negative_feedback_embeddings is None
+            or len(negative_feedback_rows) == 0
+        ):
+            return label_probs
+        local_rows = negative_feedback_rows
+        local_embeddings = negative_feedback_embeddings
+
+    query = clf.encode([classification_input], batch_size=1)
+    if query.size == 0:
+        return label_probs
+    q_norm = np.linalg.norm(query, axis=1, keepdims=True)
+    q_norm[q_norm == 0] = 1.0
+    query = query / q_norm
+
+    sims = np.dot(local_embeddings, query[0])
+    max_sim_by_label: Dict[str, float] = {}
+    for idx, sim in enumerate(sims):
+        similarity = float(sim)
+        if similarity < NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD:
+            continue
+        wrong_label = local_rows[idx]["wrong_label"]
+        max_sim_by_label[wrong_label] = max(
+            max_sim_by_label.get(wrong_label, 0.0), similarity
+        )
+
+    if not max_sim_by_label:
+        return label_probs
+
+    adjusted = dict(label_probs)
+    for label, sim in max_sim_by_label.items():
+        if label not in adjusted:
+            continue
+        # Strong similarity -> stronger reduction for that previously-wrong label.
+        penalty_factor = max(0.10, 1.0 - (0.80 * sim))
+        adjusted[label] = max(0.0, float(adjusted[label]) * penalty_factor)
+
+    return adjusted
 
 
 def _get_label_probabilities(classification_input: str) -> Dict[str, float]:
@@ -400,14 +563,30 @@ def _resolve_department_routing(department_scores: Dict[str, float]) -> Dict[str
     predictions = predictions_all[:TOP_DEPARTMENT_CANDIDATES]
     relevant = [p for p in predictions if p["score"] >= RELEVANT_DEPT_THRESHOLD]
     auto = [p for p in relevant if p["score"] >= AUTO_ROUTE_DEPT_THRESHOLD]
-    manual = [p for p in relevant if p["score"] < AUTO_ROUTE_DEPT_THRESHOLD]
+    manual = [
+        p
+        for p in relevant
+        if MANUAL_REVIEW_MIN_SCORE <= p["score"] < AUTO_ROUTE_DEPT_THRESHOLD
+    ]
 
     if not relevant and predictions:
-        manual = predictions[:3]
-        relevant = manual
+        relevant = predictions
 
-    primary = auto[0]["department"] if auto else "manual_review"
-    note = "ok" if auto else "manual_review_required"
+    if auto:
+        primary = auto[0]["department"]
+        note = "ok"
+    elif predictions:
+        # When all department scores are very low (<20%), do not send to manual review.
+        # Route to the top predicted department directly.
+        primary = predictions[0]["department"]
+        note = (
+            "manual_review_required"
+            if manual
+            else "low_confidence_below_manual_threshold_routed_top_prediction"
+        )
+    else:
+        primary = "manual_review"
+        note = "manual_review_required"
     return {
         "primary_route": primary,
         "note": note,
@@ -439,6 +618,7 @@ def _routing_debug_payload(prediction: Dict[str, object]) -> Dict[str, object]:
 def _startup_init_learning():
     try:
         _load_feedback_memory()
+        _load_negative_feedback_memory()
     except Exception as exc:
         print(f"Warning: failed to load feedback memory: {exc}")
 
@@ -455,6 +635,7 @@ def classify_text(extracted_text: str, filename: str = ""):
 
         feedback_pred = _predict_from_feedback_memory(clean_text)
         label_probs = _get_label_probabilities(clean_text)
+        label_probs = _apply_negative_feedback_penalty(clean_text, label_probs)
 
         if feedback_pred:
             fb_label, fb_score = feedback_pred
@@ -556,6 +737,7 @@ def predict_document(extracted_text: str, filename: str = "") -> Dict[str, objec
 
     predicted_label, label_confidence = classify_text(extracted_text, filename)
     label_probs = _get_label_probabilities(classification_input)
+    label_probs = _apply_negative_feedback_penalty(classification_input, label_probs)
     if predicted_label and predicted_label not in ("Unknown", "Error"):
         label_probs[predicted_label] = max(
             float(label_probs.get(predicted_label, 0.0)), float(label_confidence)
@@ -641,6 +823,17 @@ def route_and_send_email(
     ]
 
     if not auto_departments:
+        primary_route = str(routing_decision.get("primary_route") or "manual_review")
+        no_manual_candidates = len(manual_departments) == 0
+        if primary_route != "manual_review" and no_manual_candidates:
+            # Below-manual-threshold case: skip manual review and keep top prediction route.
+            return {
+                "route_to": primary_route,
+                "routed_departments": [primary_route],
+                "manual_review_departments": [],
+                "emails": [],
+                "note": "below_manual_threshold_no_manual_review",
+            }
         return {
             "route_to": "manual_review",
             "routed_departments": [],
@@ -704,6 +897,8 @@ def route_and_store(
 
     auto_department_names = [item["department"] for item in auto_departments]
     manual_department_names = [item["department"] for item in manual_departments]
+    if not auto_department_names and route_to and route_to != "manual_review":
+        auto_department_names = [route_to]
     suggested_department = (
         manual_department_names[0]
         if manual_department_names
@@ -729,8 +924,8 @@ def route_and_store(
             "confidence": float(probability),
         },
         "manual_review": {
-            "required": bool(manual_department_names) or not bool(auto_department_names),
-            "status": "pending" if (manual_department_names or not auto_department_names) else "resolved",
+            "required": bool(manual_department_names),
+            "status": "pending" if manual_department_names else "resolved",
             "suggested_department": suggested_department,
             "suggested_departments": manual_department_names,
             "confidence_by_department": {
@@ -791,6 +986,24 @@ def feedback_stats():
                 total += 1
                 by_label[label] = by_label.get(label, 0) + 1
     return {"feedback_samples": total, "by_label": by_label}
+
+
+@app.post("/learning/feedback-negative")
+def feedback_negative(payload: NegativeFeedbackRequest):
+    ok = _append_negative_feedback_sample(
+        text=payload.text,
+        wrong_label=payload.wrong_label,
+        source_doc_id=(payload.source_doc_id or "").strip(),
+    )
+    if not ok:
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": "Invalid negative feedback payload (text too short or label missing)",
+            },
+            status_code=400,
+        )
+    return {"status": "ok", "message": "Negative feedback recorded"}
 
 
 @app.post("/learning/retrain")

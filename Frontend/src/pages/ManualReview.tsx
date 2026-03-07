@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, FileText } from "lucide-react";
+import { ArrowRight, FileText, X } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import { triggerTabPulse } from "../utils/tabPulse";
 
@@ -26,6 +26,7 @@ interface DocumentItem {
   summary?: string;
   createdAt?: string;
   routed_department?: string;
+  routed_departments?: string[];
   python_file_id?: string;
   department_id?: string | { _id?: string; name?: string };
   metadata?: {
@@ -85,6 +86,7 @@ export default function ManualReview() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [routingId, setRoutingId] = useState<string | null>(null);
+  const [dismissingId, setDismissingId] = useState<string | null>(null);
   const [clearingQueue, setClearingQueue] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -375,6 +377,59 @@ export default function ManualReview() {
     }
   };
 
+  const dismissFromQueueWithNegativeFeedback = async (doc: DocumentItem) => {
+    const review = doc.metadata?.manual_review;
+    const predictedLabel = normalizeLabel(review?.predicted_label);
+    const existingMetadata = doc.metadata || {};
+    const existingManualReview = existingMetadata.manual_review || {};
+    const fallbackRoute = (
+      (Array.isArray(doc.routed_departments) ? doc.routed_departments : []).find(
+        (d) => normalizeName(d) !== "manual_review"
+      ) ||
+      (normalizeName(doc.routed_department) !== "manual_review" ? doc.routed_department : "") ||
+      ""
+    ).trim();
+
+    const res = await authFetch(`${API_URL}/api/documents/${doc._id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        routed_department: fallbackRoute,
+        metadata: {
+          ...existingMetadata,
+          manual_review: {
+            ...existingManualReview,
+            required: false,
+            status: "dismissed",
+            dismissed_reason: "prediction_marked_wrong",
+            dismissed_at: new Date().toISOString(),
+          },
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || "Failed to dismiss from manual review queue");
+    }
+
+    if (doc.python_file_id && predictedLabel) {
+      const feedbackText = (doc.summary || doc.title || "").trim();
+      if (feedbackText.length >= 20) {
+        await fetch(`${AI_BASE_URL}/learning/feedback-negative`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: feedbackText,
+            wrong_label: predictedLabel,
+            source_doc_id: doc.python_file_id,
+          }),
+        }).catch(() => null);
+      }
+    }
+
+    setDocuments((prev) => prev.filter((d) => d._id !== doc._id));
+  };
+
   return (
     <DashboardLayout>
       <div className="min-h-screen bg-slate-50 p-8">
@@ -405,6 +460,17 @@ export default function ManualReview() {
               const review = doc.metadata?.manual_review;
               const suggested = review?.suggested_department || "No suggestion";
               const confidence = typeof review?.confidence === "number" ? `${(review.confidence * 100).toFixed(1)}%` : "N/A";
+              const previouslyRoutedDepartments = Array.from(
+                new Set(
+                  [
+                    ...(Array.isArray(doc.routed_departments) ? doc.routed_departments : []),
+                    doc.routed_department || "",
+                  ]
+                    .map((d) => (d || "").trim())
+                    .filter((d) => d && normalizeName(d) !== "manual_review")
+                )
+              );
+              const previouslyRoutedText = previouslyRoutedDepartments.join(" / ");
 
               return (
                 <div key={doc._id} className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
@@ -424,6 +490,11 @@ export default function ManualReview() {
                         <span className="px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-200">
                           Confidence: {confidence}
                         </span>
+                        {previouslyRoutedText && (
+                          <span className="px-2 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Previously Routed: {previouslyRoutedText}
+                          </span>
+                        )}
                         {review?.predicted_label && (
                           <span className="px-2 py-1 rounded bg-gray-100 text-gray-700 border border-gray-200">
                             Predicted Label: {review.predicted_label}
@@ -480,11 +551,34 @@ export default function ManualReview() {
                       </select>
                       <button
                         onClick={() => onRouteDocument(doc)}
-                        disabled={routingId === doc._id}
+                        disabled={routingId === doc._id || dismissingId === doc._id}
                         className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-60 inline-flex items-center gap-2"
                       >
                         <ArrowRight className="w-4 h-4" />
                         {routingId === doc._id ? "Routing..." : "Route"}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const confirmed = window.confirm(
+                            "Remove this document from manual review queue and mark prediction as wrong?"
+                          );
+                          if (!confirmed) return;
+                          setDismissingId(doc._id);
+                          try {
+                            await dismissFromQueueWithNegativeFeedback(doc);
+                          } catch (err) {
+                            console.error("Manual review dismiss error:", err);
+                            alert("Could not remove document from manual review queue.");
+                          } finally {
+                            setDismissingId(null);
+                          }
+                        }}
+                        disabled={routingId === doc._id || dismissingId === doc._id}
+                        className="p-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-60"
+                        title="Remove from queue (negative feedback)"
+                        aria-label="Remove from queue"
+                      >
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
