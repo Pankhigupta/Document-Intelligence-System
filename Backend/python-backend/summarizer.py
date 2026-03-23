@@ -313,7 +313,7 @@ def generate_integrated_summary(summaries_with_titles):
                     time.sleep(5)
                     continue
             
-            # if gemini fails, print actual summary
+            # PERFECTLY CLEAN FALLBACK: No HTML tags at all, just text
             fallback_parts = []
             for item in items_to_process:
                 fallback_parts.append(f"📄 {item['title'].upper()}:\n{item['summary']}")

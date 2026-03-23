@@ -145,6 +145,7 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [latestIntegratedSummary, setLatestIntegratedSummary] = useState("");
   const [latestSummaryTitles, setLatestSummaryTitles] = useState<string[]>([]);
+  const [latestSummaryDocs, setLatestSummaryDocs] = useState<{_id: string, title: string}[]>([]);
   const [latestSummaryLoading, setLatestSummaryLoading] = useState(false);
   const [latestSummaryError, setLatestSummaryError] = useState<string | null>(null);
 
@@ -217,11 +218,14 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
     const payloadDocuments = latestFour
       .filter((d) => (d.summary || "").trim().length > 0)
       .map((d) => ({
+        _id: d._id, // id
         title: d.title || "Untitled",
         summary: d.summary,
       }));
 
     setLatestSummaryTitles(latestFour.map((d) => d.title || "Untitled"));
+
+    setLatestSummaryDocs(latestFour.map((d) => ({ _id: d._id, title: d.title || "Untitled" })));
 
     if (payloadDocuments.length === 0) {
       setLatestIntegratedSummary("");
@@ -1007,9 +1011,28 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
         ) : latestSummaryError ? (
           <p className="text-sm text-red-600">{latestSummaryError}</p>
         ) : (
-          <p className="text-sm text-gray-700 leading-relaxed">
-            {latestIntegratedSummary || "No integrated summary available."}
-          </p>
+          <div className="space-y-3">
+            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
+              {latestIntegratedSummary || "No integrated summary available."}
+            </p>
+            
+            {/* THIS ADDS THE LINKS AT THE BOTTOM */}
+            {latestIntegratedSummary && latestSummaryDocs.length > 0 && (
+              <div className="flex items-center gap-3 pt-3 mt-2 border-t border-indigo-50/50">
+                <span className="text-xs text-gray-500 font-medium">Sources:</span>
+                {latestSummaryDocs.map((doc) => (
+                  <button
+                    key={doc._id}
+                    onClick={() => navigate(`/document/${doc._id}`)}
+                    title={`Open: ${doc.title}`}
+                    className="text-base hover:scale-125 transition-transform duration-200"
+                  >
+                    🔗
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
