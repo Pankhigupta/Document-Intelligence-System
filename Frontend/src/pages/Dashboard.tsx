@@ -185,6 +185,18 @@ export default function Dashboard() {
     }
   }, [profile]);
 
+  useEffect(() => {
+    if (!loading && documents.length > 0) {
+      const docMissingSummary = documents.find(
+        (d) => (!d.summary || d.summary.trim() === "" || d.summary.includes("No summary available")) && d.file_url
+      );
+
+      if (docMissingSummary && !summarizingId) {
+        handleGenerateSummary(docMissingSummary._id, docMissingSummary.file_url!);
+      }
+    }
+  }, [documents, loading, summarizingId]);
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -617,6 +629,43 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
     }
   };
 
+  const handleGenerateSummary = async (docId: string, fileUrl: string) => {
+    if (summarizingId === docId) return;
+    setSummarizingId(docId);
+    try {
+      const fullUrl = fileUrl.startsWith("http") ? fileUrl : `${BASE_URL}${fileUrl}`;
+      const fileRes = await fetch(fullUrl);
+      if (!fileRes.ok) throw new Error("File not found on server");
+      
+      const blob = await fileRes.blob();
+      const file = new File([blob], "doc.pdf");
+
+      const aiFormData = new FormData();
+      aiFormData.append("file", file);
+
+      const aiRes = await fetch(`${AI_BASE_URL}/summarize`, {
+        method: "POST",
+        body: aiFormData,
+      });
+
+      const aiData = await aiRes.json();
+      const generatedSummary = aiData.summary || "AI could not generate a summary.";
+
+      const updateRes = await authFetch(`${API_URL}/api/documents/${docId}`, {
+        method: "PUT",
+        body: JSON.stringify({ summary: generatedSummary }),
+      });
+
+      if (updateRes.ok) {
+        setDocuments(prev => prev.map(d => d._id === docId ? { ...d, summary: generatedSummary } : d));
+      }
+    } catch (err) {
+      console.error("AI Auto-Summary Error:", err);
+    } finally {
+      setSummarizingId(null);
+    }
+  };
+
   const handleDeleteDocument = async (docId: string) => {
     const confirmed = window.confirm("Delete this document permanently?");
     if (!confirmed) return;
@@ -931,7 +980,7 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
                     title={`Open: ${doc.title}`}
                     className="rounded-lg bg-indigo-50 px-2 py-1 text-sm text-indigo-600 transition hover:scale-105 hover:bg-indigo-100"
                   >
-                    Open
+                    🔗
                   </button>
                 ))}
               </div>
@@ -976,10 +1025,13 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
           ) : (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {filteredDocuments.map((doc) => (
+              <div key={doc._id} className="relative h-[220px] w-full"> 
                 <div
-                  key={doc._id}
                   onClick={() => navigate(`/document/${doc._id}`)}
-                  className="group flex h-full cursor-pointer flex-col rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition-all duration-300 ease-in-out hover:z-10 hover:scale-[1.06] hover:border-blue-200 hover:shadow-2xl"
+                  className="group absolute top-0 left-0 w-full h-full bg-white rounded-2xl p-5 border border-gray-200 shadow-sm 
+                            transition-all duration-300 ease-in-out cursor-pointer flex flex-col
+                            hover:w-[120%] hover:-left-[10%] hover:h-fit hover:min-h-[110%] 
+                            hover:scale-105 hover:z-[100] hover:shadow-2xl hover:border-blue-200"
                 >
                   <div className="flex flex-col h-full">
                     <div className="flex justify-between items-start mb-3">
@@ -1002,13 +1054,13 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
                       </div>
                     </div>
 
-                    <div className="flex-grow overflow-hidden">
+                    <div className="flex-grow overflow-hidden group-hover:overflow-visible">
                       <div className="flex items-center gap-1 mb-1.5">
                         <Sparkles className="w-3 h-3 text-blue-500" />
                         <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Quick Extract</span>
                       </div>
 
-                      <p className="line-clamp-3 text-sm leading-relaxed text-gray-500">
+                      <p className="text-sm text-gray-500 line-clamp-3 group-hover:line-clamp-none group-hover:text-xs transition-all duration-300 leading-relaxed">
                         {doc.summary}
                       </p>
                     </div>
@@ -1029,7 +1081,8 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
                     </div>
                   </div>
                 </div>
-              ))}
+              </div>
+            ))}
             </div>
           )}
         </div>
@@ -1110,10 +1163,13 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
               const badgeStyle = getDepartmentBadgeStyle(routedDepartment);
 
               return (
-                <div key={file._id} className="w-full">
+                <div key={file._id} className="relative h-[220px] w-full">
                   <div
                     onClick={() => navigate(`/gmail-document/${file._id}`)}
-                    className="group flex h-full cursor-pointer flex-col rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition-all duration-300 ease-in-out hover:z-10 hover:scale-[1.06] hover:border-indigo-200 hover:shadow-2xl"
+                    className="group absolute top-0 left-0 w-full h-full bg-white rounded-2xl p-5 border border-gray-200 shadow-sm 
+                              transition-all duration-300 ease-in-out cursor-pointer flex flex-col
+                              hover:w-[120%] hover:-left-[10%] hover:h-fit hover:min-h-[110%] 
+                              hover:scale-105 hover:z-[100] hover:border-indigo-200 hover:shadow-2xl"
                   >
                     <div className="flex flex-col h-full">
                       <div className="flex justify-between items-start mb-3">
@@ -1136,13 +1192,13 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
                         </div>
                       </div>
 
-                      <div className="flex-grow overflow-hidden">
+                      <div className="flex-grow overflow-hidden group-hover:overflow-visible">
                         <div className="flex items-center gap-1 mb-1.5">
                           <Mail className="w-3 h-3 text-indigo-500" />
                           <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Mail Summary</span>
                         </div>
 
-                        <p className="line-clamp-3 text-sm leading-relaxed text-gray-500">
+                        <p className="text-sm text-gray-500 line-clamp-3 group-hover:line-clamp-none group-hover:text-xs transition-all duration-300 leading-relaxed">
                           {file.summary || file.metadata?.subject || "No summary available yet."}
                         </p>
                       </div>
