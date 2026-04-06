@@ -157,6 +157,9 @@ export default function Dashboard() {
   const { profile, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
+  const [summaryMode, setSummaryMode] = useState<"recent" | "priority">("recent");
+  const lastSummarizedIdsRef = useRef<string>("");
+
   useEffect(() => {
     if (authLoading) {
       console.log("⏳ Auth still loading...");
@@ -218,23 +221,29 @@ export default function Dashboard() {
     setLoading(false);
   };
 
-const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
+  const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
+
+    const currentIds = docs.map(d => d._id).join(",");
+    if (currentIds === lastSummarizedIdsRef.current) {
+      return; 
+    }
+
     const sorted = [...docs].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
-  
+
     const latestFour = sorted.slice(0, 4);
+
+    setLatestSummaryTitles(latestFour.map((d) => d.title || "Untitled"));
+    setLatestSummaryDocs(latestFour.map((d) => ({ _id: d._id, title: d.title || "Untitled" })));
+
     const payloadDocuments = latestFour
       .filter((d) => (d.summary || "").trim().length > 0)
       .map((d) => ({
-        _id: d._id, // id
+        _id: d._id,
         title: d.title || "Untitled",
         summary: d.summary,
       }));
-
-    setLatestSummaryTitles(latestFour.map((d) => d.title || "Untitled"));
-
-    setLatestSummaryDocs(latestFour.map((d) => ({ _id: d._id, title: d.title || "Untitled" })));
 
     if (payloadDocuments.length === 0) {
       setLatestIntegratedSummary("");
@@ -257,26 +266,34 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
   };
 
   useEffect(() => {
-    if (!profile) return;
+  if (!profile || documents.length === 0) return;
 
-    const currentUserId = profile?.id || (profile as any)?._id;
-    const ownedDocs = Array.isArray(documents)
-      ? documents.filter((d) => {
-          const uploaderId =
-            typeof d.uploaded_by === "string" ? d.uploaded_by : d.uploaded_by?._id;
-          return !!currentUserId && !!uploaderId && uploaderId === currentUserId;
-        })
-      : [];
+  const currentUserId = profile?.id || (profile as any)?._id;
+  const ownedDocs = documents.filter((d) => {
+    const uploaderId = typeof d.uploaded_by === "string" ? d.uploaded_by : d.uploaded_by?._id;
+    return uploaderId === currentUserId;
+  });
 
-    if (ownedDocs.length === 0) {
-      setLatestIntegratedSummary("");
-      setLatestSummaryTitles([]);
-      setLatestSummaryError(null);
-      return;
+  let docsToProcess = [...ownedDocs];
+
+  if (summaryMode === "priority") {
+    docsToProcess.sort((a, b) => (b.priority?.priority_score || 0) - (a.priority?.priority_score || 0));
+  } else {
+    // Default: Sort by newest date
+    docsToProcess.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  const targetDocs = docsToProcess.slice(0, 4);
+
+  const currentIds = targetDocs.map(d => d._id).join(",") + summaryMode;
+    if (currentIds === lastSummarizedIdsRef.current) {
+      return; 
     }
+    
+    lastSummarizedIdsRef.current = currentIds;
 
-    loadLatestIntegratedSummary(ownedDocs);
-  }, [documents, profile]);
+  loadLatestIntegratedSummary(targetDocs);
+}, [documents, profile, summaryMode]);
 
   const runClassifierAndSummarizer = async (file: File): Promise<IngestResponse> => {
     const aiFormData = new FormData();
@@ -947,14 +964,29 @@ const loadLatestIntegratedSummary = async (docs: DocumentWithDetails[]) => {
       </div>
 
       <div className="mb-6 rounded-[1.5rem] border border-white/60 bg-white/90 p-5 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.35)] backdrop-blur-lg sm:mb-8 sm:p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <Sparkles className="w-5 h-5 text-indigo-600" />
-          <h2 className="text-lg font-bold text-gray-800 sm:text-xl">Latest Document Insights</h2>
-        </div>
-        
-        <p className="text-xs text-gray-500 mb-3">
-          Synthesized from your 4 most recent documents
-        </p>
+  <div className="flex items-center justify-between mb-3">
+    <div className="flex items-center gap-2">
+      <Sparkles className="w-5 h-5 text-indigo-600" />
+      <h2 className="text-lg font-bold text-gray-800 sm:text-xl">
+        {summaryMode === "recent" ? "Latest Document Insights" : "High Priority Insights"}
+      </h2>
+    </div>
+    
+    {/* NEW TOGGLE BUTTON */}
+    <button 
+      onClick={() => setSummaryMode(summaryMode === "recent" ? "priority" : "recent")}
+      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors border border-indigo-100"
+    >
+      {summaryMode === "recent" ? "Switch to High Priority" : "Switch to Most Recent"}
+    </button>
+  </div>
+  
+  <p className="text-xs text-gray-500 mb-3">
+    {summaryMode === "recent" 
+      ? "Synthesized from your 4 most recent documents" 
+      : "Synthesized from your 4 highest priority documents"}
+  </p>
+
 
         {latestSummaryLoading ? (
           <div className="flex items-center gap-2">
