@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, FileText, X } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import { triggerTabPulse } from "../utils/tabPulse";
+import { getDocumentDisplayName } from "../utils/documentName";
 
 interface Department {
   _id: string;
@@ -23,6 +24,7 @@ interface ManualReviewMetadata {
 interface DocumentItem {
   _id: string;
   title: string;
+  original_filename?: string;
   summary?: string;
   createdAt?: string;
   routed_department?: string;
@@ -454,12 +456,37 @@ export default function ManualReview() {
               return (
                 <div key={doc._id} className="bg-white dark:bg-gray-950 rounded-xl border border-gray-200 dark:border-gray-700 p-5 shadow-sm">
                   <div className="flex items-start justify-between gap-4">
+                    <button
+                      onClick={async () => {
+                        const confirmed = window.confirm(
+                          "Remove this document from manual review queue and mark prediction as wrong?"
+                        );
+                        if (!confirmed) return;
+                        setDismissingId(doc._id);
+                        try {
+                          await dismissFromQueueWithNegativeFeedback(doc);
+                        } catch (err) {
+                          console.error("Manual review dismiss error:", err);
+                          alert("Could not remove document from manual review queue.");
+                        } finally {
+                          setDismissingId(null);
+                        }
+                      }}
+                      disabled={routingId === doc._id || dismissingId === doc._id}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 disabled:opacity-60"
+                      title="Remove from queue (negative feedback)"
+                      aria-label="Remove from queue"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,420px)] lg:items-start">
                     <div className="min-w-0">
                       <button
                         onClick={() => navigate(`/document/${doc._id}`)}
                         className="text-left text-lg font-semibold text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400 transition"
                       >
-                        {doc.title}
+                        {getDocumentDisplayName(doc, "Document")}
                       </button>
                       <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{doc.summary || "No summary available."}</p>
                       <div className="mt-3 flex flex-wrap gap-3 text-xs">
@@ -482,7 +509,7 @@ export default function ManualReview() {
                       </div>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 shrink-0 w-full">
+                    <div className="grid gap-2 sm:grid-cols-2 lg:self-start">
                       <select
                         value={selectedDeptByDoc[doc._id] || ""}
                         onChange={(e) => {
