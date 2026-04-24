@@ -988,9 +988,9 @@ export default function Dashboard() {
         <div className="rounded-[1.5rem] border border-white/60 dark:border-gray-950/60 bg-white/90 dark:bg-gray-950/90 p-5 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.35)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_48px_-28px_rgba(37,99,235,0.25)]">
           <div className="flex justify-between items-center">
             <div>
-              <p className="text-sm text-slate-500">Total Documents</p>
+              <p className="text-sm text-slate-500">Recent Documents</p>
               <h2 className="mt-1 text-3xl font-bold text-slate-800 dark:text-slate-200">
-                {documents.length}
+                {filteredDocuments.length}
               </h2>
             </div>
             <div className="rounded-2xl bg-blue-50 dark:bg-blue-950/50 p-3 text-blue-600 dark:text-blue-400">
@@ -1005,7 +1005,7 @@ export default function Dashboard() {
             <div>
               <p className="text-sm text-slate-500">High Priority</p>
               <h2 className="mt-1 text-3xl font-bold text-red-600 dark:text-red-400">
-                {documents.filter((d) => {
+                {filteredDocuments.filter((d) => {
                   const level = d.priority?.priority_level;
                   return d.urgency === "high" || level === "High" || level === "Critical";
                 }).length}
