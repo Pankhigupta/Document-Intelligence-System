@@ -848,12 +848,22 @@ export default function Dashboard() {
     return "Unrouted";
   };
 
+  const isDocumentProcessing = (doc: DocumentWithDetails) =>
+    (doc.summary || "").trim().toLowerCase() === "processing your document...";
+
+  const getDocumentPriorityLabel = (doc: DocumentWithDetails) =>
+    isDocumentProcessing(doc) ? "Processing" : (doc.priority?.priority_level || "Low");
+
+  const getDocumentDepartmentChipLabel = (doc: DocumentWithDetails) =>
+    isDocumentProcessing(doc) ? "Processing" : getDocumentDepartmentLabel(doc);
+
   const getPriorityColor = (level?: string) =>
     ({
       Critical: "bg-rose-100 text-rose-800 border-rose-200",
       High: "bg-orange-100 text-orange-800 border-orange-200",
       Medium: "bg-amber-100 text-amber-800 border-amber-200",
       Low: "bg-emerald-100 text-emerald-800 border-emerald-200",
+      Processing: "bg-slate-100 text-slate-700 border-slate-200",
     }[level || ""] || "bg-slate-100 text-slate-700 border-slate-200");
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
@@ -1143,8 +1153,8 @@ export default function Dashboard() {
                         {doc.title}
                       </h3>
                       <div className="flex items-center gap-2 shrink-0">
-                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border uppercase ${getPriorityColor(doc.priority?.priority_level)}`}>
-                          {doc.priority?.priority_level || "Low"}
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border uppercase ${getPriorityColor(getDocumentPriorityLabel(doc))}`}>
+                          {getDocumentPriorityLabel(doc)}
                         </span>
                         <button
                           onClick={(e) => {
@@ -1174,15 +1184,19 @@ export default function Dashboard() {
                         <Clock className="w-3 h-3" />
                         {new Date(doc.createdAt).toLocaleDateString()}
                       </span>
-                      {(doc.department || doc.routed_department || (doc.routed_departments?.length ?? 0) > 0) && (
+                      {(doc.department || doc.routed_department || (doc.routed_departments?.length ?? 0) > 0 || isDocumentProcessing(doc)) && (
                         <span
                           className="px-2 py-0.5 rounded-md font-medium"
                           style={{
-                            backgroundColor: `${doc.department?.color || "#475569"}15`,
-                            color: doc.department?.color || "#475569",
+                            backgroundColor: isDocumentProcessing(doc)
+                              ? "#e2e8f015"
+                              : `${doc.department?.color || "#475569"}15`,
+                            color: isDocumentProcessing(doc)
+                              ? "#475569"
+                              : doc.department?.color || "#475569",
                           }}
                         >
-                          {getDocumentDepartmentLabel(doc)}
+                          {getDocumentDepartmentChipLabel(doc)}
                         </span>
                       )}
                     </div>
